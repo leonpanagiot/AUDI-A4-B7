@@ -1,0 +1,10 @@
+{
+  "name": "AudiBFB Live",
+  "description": "Audi 1.8T BFB Live Telemetry & OBD2 Diagnostics dashboard for Android with PWA installation and APK project generation",
+  "requestFramePermissions": [
+    "bluetooth"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
