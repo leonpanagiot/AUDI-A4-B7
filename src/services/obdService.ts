@@ -19,6 +19,7 @@ export interface PidDebugEntry {
   rawResponse: string;
   parsedValue: string;
   latencyMs: number;
+  bridgeLatencyMs?: number;
   refreshIntervalMs: number;
   lastValidTimestampMs: number;
   status: 'ok' | 'no_data' | 'error' | 'searching' | 'pending';
@@ -34,6 +35,7 @@ export interface ObdCommandLog {
   rawResp: string;
   parsedInfo: string;
   latencyMs: number;
+  bridgeMs?: number;
   isError: boolean;
 }
 
@@ -50,6 +52,8 @@ export interface ObdDebugState {
   kLineDroppedFrames: number;
   supportedSensorsCount: number;
   avgCommandMs: number;
+  lastBridgeLatencyMs: number;
+  avgBridgeLatencyMs: number;
   commandsPerSecHz: number;
   supportedPids0120: string;
   supportedPids2140: string;
@@ -288,6 +292,7 @@ const INITIAL_PID_CATALOG: Array<{ pid: string; name: string }> = [
   { pid: '2102', name: 'VAG KWP Group 002 (Load, Injection Time ms & MAF)' },
   { pid: '2114', name: 'VAG KWP Group 020 (Knock Retard Cyl 1-4 CF°)' },
   { pid: '211F', name: 'VAG KWP Group 031 (Lambda Actual & Specified)' },
+  { pid: '2186', name: 'VAG KWP Group 134 (Oil Temp, IAT, Coolant Temp)' },
   { pid: 'ATRV', name: 'Adapter Battery Voltage (Pin 16 V)' },
 ];
 
@@ -336,6 +341,10 @@ class ObdEngine {
   // Set of PIDs confirmed unsupported on the connected ECU so we NEVER waste K-Line time on NO DATA
   private unsupportedPids: Set<string> = new Set();
 
+  // Android Native Wi-Fi / Bluetooth SPP Bridge timing measurement
+  private lastBridgeLatencyMs: number = 0;
+  private recentBridgeLatencies: number[] = [];
+
   // Verified KWP2000 Diagnostic Session flag (true only when 10 89 -> 50 89 or 21 XX -> 61 XX succeeds)
   private kwpSessionActive: boolean = false;
 
@@ -359,6 +368,8 @@ class ObdEngine {
     kLineDroppedFrames: 0,
     supportedSensorsCount: 0,
     avgCommandMs: 0,
+    lastBridgeLatencyMs: 0,
+    avgBridgeLatencyMs: 0,
     commandsPerSecHz: 0,
     supportedPids0120: '-',
     supportedPids2140: '-',
@@ -391,6 +402,7 @@ class ObdEngine {
         rawResponse: '-',
         parsedValue: 'N/A',
         latencyMs: 0,
+        bridgeLatencyMs: 0,
         refreshIntervalMs: 0,
         lastValidTimestampMs: 0,
         status: 'pending',
@@ -407,8 +419,13 @@ class ObdEngine {
     this.unsupportedPids.add('2102');
     this.unsupportedPids.add('2114');
     this.unsupportedPids.add('211F');
+    this.unsupportedPids.add('2186');
     this.kwpSessionActive = false;
     this.recentLatencies = [];
+    this.lastBridgeLatencyMs = 0;
+    this.recentBridgeLatencies = [];
+    this.debugState.lastBridgeLatencyMs = 0;
+    this.debugState.avgBridgeLatencyMs = 0;
     this.kwpGroupCache = {};
     this.debugState.kLineDroppedFrames = 0;
     this.debugState.supportedSensorsCount = 0;
@@ -1303,7 +1320,7 @@ class ObdEngine {
    * on the active K-Line connection and probes whether `21 73` (Group 115 Boost Specified/Actual)
    * and `21 76` (Group 118 N75/Boost) return genuine `61 73` / `61 76` Measuring Block frames.
    *
-   * Strictly NEVER assumes `2173` works unless a verified `61 73` response is received from the ECU!
+   * Strictly NEVER assumes `2173` works unless a verified `50 89` session and `61 73` response is received!
    */
   private async probeVagKwp2000SessionAndBlocks(map010BSupported: boolean): Promise<void> {
     this.notifyStatus('Έλεγχος συνεδρίας VAG KWP2000 (10 89) & Group 115/118 (2173/2176)...', this.mode);
@@ -1311,19 +1328,39 @@ class ObdEngine {
     const start1089 = Date.now();
     const resp1089 = await this.sendObdCommand('1089');
     const lat1089 = Date.now() - start1089;
-    const clean1089 = (resp1089 || '').toUpperCase().replace(/[^0-9A-F]/g, '');
-    const sessionConfirmed = clean1089.includes('5089') || clean1089.includes('50');
+    const sessionConfirmed = this.isKwp1089PositiveResponse(resp1089);
 
     this.debugState.kwp1089Response = (resp1089 || 'NO DATA').trim();
     this.recordCommandLog(
       '1089',
       resp1089 || 'NO DATA',
       sessionConfirmed
-        ? 'KWP2000 Diagnostic Session 0x89 ΕΠΙΒΕΒΑΙΩΘΗΚΕ (50 89)'
-        : 'KWP2000 10 89 απορρίφθηκε (ISO 9141-2 OBD Mode)',
+        ? 'KWP2000 Diagnostic Session 0x89 ΕΠΙΒΕΒΑΙΩΘΗΚΕ (θετική απάντηση 50 89)'
+        : `KWP2000 10 89 απορρίφθηκε ή μη διαθέσιμο (${this.debugState.kwp1089Response})`,
       lat1089,
       !sessionConfirmed
     );
+
+    if (!sessionConfirmed) {
+      // 10 89 failed -> Do not attempt or enable KWP Service 21 channels.
+      this.kwpSessionActive = false;
+      this.unsupportedPids.add('2173');
+      this.unsupportedPids.add('2176');
+      this.unsupportedPids.add('2102');
+      this.unsupportedPids.add('2114');
+      this.unsupportedPids.add('211F');
+      this.unsupportedPids.add('2186');
+
+      this.debugState.kwpSessionStatus = `Απορρίφθηκε (Απάντηση 1089: "${this.debugState.kwp1089Response}" - δεν περιέχει 50 89)`;
+      this.debugState.boostGroup115Status = map010BSupported
+        ? 'Boost Actual ενεργό μέσω PID 010B • Boost Specified απαιτεί KWP2000 2173 (Μη διαθέσιμο στο ενεργό πρωτόκολλο)'
+        : 'Μη διαθέσιμο: Το PID 010B και το KWP 2173 δεν απέδωσαν δεδομένα';
+      return;
+    }
+
+    // 10 89 confirmed with real 50 89!
+    this.kwpSessionActive = true;
+    this.debugState.kwpSessionStatus = `ΕΝΕΡΓΗ (Θετική απάντηση 50 89 • ${this.debugState.kwp1089Response})`;
 
     // Now test Group 115 (`2173`) directly to see if the ECU answers `61 73 ...`
     this.unsupportedPids.delete('2173');
@@ -1332,17 +1369,16 @@ class ObdEngine {
     });
 
     if (g115Res !== null) {
-      this.kwpSessionActive = true;
       this.unsupportedPids.delete('2173');
-      this.debugState.kwpSessionStatus = `ΕΝΕΡΓΗ (KWP2000 Service 21 Επιβεβαιώθηκε • 1089: ${this.debugState.kwp1089Response})`;
       this.debugState.boostGroup115Status = `ΕΝΕΡΓΟ μέσω VAG KWP Group 115 (61 73 -> ${g115Res})`;
 
-      // Since KWP2000 Service 21 is confirmed on this protocol, also probe Group 118 (2176), 002 (2102), 020 (2114), 031 (211F)
+      // Also probe Group 118 (2176), 002 (2102), 020 (2114), 031 (211F), 134 (2186)
       for (const kwpItem of [
         { pid: '2176', hex: '76', num: '118', label: 'VAG KWP Group 118 (IAT, N75 Duty % & Boost Actual)' },
         { pid: '2102', hex: '02', num: '002', label: 'VAG KWP Group 002 (Load, Injection Time ms & MAF)' },
         { pid: '2114', hex: '14', num: '020', label: 'VAG KWP Group 020 (Knock Retard Cyl 1-4 CF°)' },
         { pid: '211F', hex: '1F', num: '031', label: 'VAG KWP Group 031 (Lambda Actual & Specified)' },
+        { pid: '2186', hex: '86', num: '134', label: 'VAG KWP Group 134 (Oil Temp, IAT, Coolant Temp)' },
       ]) {
         this.unsupportedPids.delete(kwpItem.pid);
         const res = await this.executeTrackedPid(kwpItem.pid, kwpItem.label, (raw) =>
@@ -1353,28 +1389,25 @@ class ObdEngine {
         }
       }
     } else {
-      // 2173 did not return 61 73 -> keep all 21XX channels in unsupportedPids so polling stays 100% fast!
       this.kwpSessionActive = false;
       this.unsupportedPids.add('2173');
       this.unsupportedPids.add('2176');
       this.unsupportedPids.add('2102');
       this.unsupportedPids.add('2114');
       this.unsupportedPids.add('211F');
+      this.unsupportedPids.add('2186');
 
-      this.debugState.kwpSessionStatus = sessionConfirmed
-        ? `1089 -> ${this.debugState.kwp1089Response}, αλλά 2173 -> NO DATA`
-        : `Μη διαθέσιμη σε ISO 9141-2 (${this.debugState.protocolName}) • 1089 -> ${this.debugState.kwp1089Response}`;
-
+      this.debugState.kwpSessionStatus = `1089 -> 50 89, αλλά το Group 115 (2173) επέστρεψε NO DATA στο ${this.debugState.protocolName}`;
       this.debugState.boostGroup115Status = map010BSupported
-        ? 'Boost Actual ενεργό μέσω PID 010B • Boost Specified απαιτεί KWP2000 2173 (Μη υποστηριζόμενο σε ISO 9141-2)'
-        : 'Μη διαθέσιμο: Το PID 010B (Bitmask 0100) και το KWP 2173 επέστρεψαν NO DATA στο ενεργό πρωτόκολλο';
+        ? 'Boost Actual ενεργό μέσω PID 010B • Boost Specified απαιτεί KWP2000 2173 (NO DATA)'
+        : 'Μη διαθέσιμο (PID 010B και KWP 2173 επέστρεψαν NO DATA)';
     }
   }
 
   /**
    * Probes 17-Instruments (Kombiinstrument - Address 0x17) for real Oil Temperature sensor G266 (Group 050 / 21 32).
-   * Safely pauses Engine polling, configures KWP2000 target header for 17-Instruments (ATSH 81 17 F1 & ATSP5/ATSP4),
-   * checks `10 89` + `21 32` (Group 050) and `21 03` (Group 003), and then cleanly restores the 01-Engine connection.
+   * Safely pauses Engine polling, configures KWP2000 target header for 17-Instruments (ATSH 81 17 F1 & ATSP5),
+   * checks `10 89` for verified positive response `50 89`, checks `21 32` (Group 050), and then cleanly restores the 01-Engine connection.
    * Never creates a fake oil temperature!
    */
   public async probe17InstrumentsOilTempG266(): Promise<string> {
@@ -1401,37 +1434,56 @@ class ObdEngine {
       await this.sendObdCommand('ATSP5');
 
       const r1089 = await this.sendObdCommand('1089');
-      const r2132 = await this.sendObdCommand('2132'); // Group 050 (0x32): Speed, RPM, Oil Temp G266, Coolant
+      const sessionConfirmed = this.isKwp1089PositiveResponse(r1089);
 
       this.recordCommandLog(
-        '17-INST:2132',
-        `1089->${r1089 || 'NO DATA'} | 2132->${r2132 || 'NO DATA'}`,
-        'Έλεγχος G266 μέσω 17-Instruments (Group 050)',
+        '17-INST:1089',
+        r1089 || 'NO DATA',
+        sessionConfirmed
+          ? '17-Instruments KWP2000 Συνεδρία ΕΠΙΒΕΒΑΙΩΘΗΚΕ (50 89)'
+          : `17-Instruments 10 89 απορρίφθηκε (Απάντηση: ${(r1089 || 'NO DATA').trim()})`,
         0,
-        !r2132.includes('61')
+        !sessionConfirmed
       );
 
-      const cells50 = this.decodeKwpBlockResponse(r2132, '32');
-      if (cells50) {
-        // In 17-Instruments Group 050, Field 3 (cells50[2]) or Field 4 is Oil Temperature G266 in °C
-        const oilStr = cells50.find(c => c.includes('°C')) || cells50[2];
-        const parsedTemp = parseFloat(oilStr);
-        if (!isNaN(parsedTemp) && parsedTemp > -30 && parsedTemp < 180) {
-          this.liveTelemetry.oilTemp = Math.round(parsedTemp);
-          this.pushLiveTelemetryUpdate();
-          resultMsg = `ΕΠΙΤΥΧΙΑ 17-Instruments Group 050 (2132): G266 = ${Math.round(parsedTemp)} °C [Raw: ${r2132.trim()}]`;
-        } else {
-          resultMsg = `17-Instruments απάντησε (${ cells50.join(' | ') }), αλλά δεν βρέθηκε έγκυρη θερμοκρασία G266.`;
-        }
+      if (!sessionConfirmed) {
+        // Module 17 did not accept KWP2000 10 89 session (standard for A4 B7 where cluster uses KW1281 / TP2.0 CAN)
+        resultMsg = `Το καντράν (17-Instruments, διεύθυνση 0x17) δεν απάντησε με θετική συνεδρία KWP2000 50 89 (Απάντηση 1089: "${(r1089 || 'NO DATA').trim()}"). Στο Audi A4 B7 (8E / Bosch RB8), το καντράν επικοινωνεί μέσω VAG KW1281 (K-Line 5-baud @ 0x17) ή TP2.0 CAN, τα οποία δεν υποστηρίζονται από το υλικολογισμικό του ELM327 (απαιτείται διαγνωστικό VCDS / VCP). Η θερμοκρασία λαδιού G266 παραμένει αυστηρά N/A.`;
       } else {
-        resultMsg = `Αδύνατη ανάγνωση 17-Instruments με ELM327 (1089: "${(r1089 || 'NO DATA').trim()}", 2132: "${(r2132 || 'NO DATA').trim()}"). Στο Audi A4 B7 (8E) το καντράν (17-Instruments) χρησιμοποιεί αποκλειστικό VAG KW1281 (5-baud @ 0x17) ή TP2.0 CAN που δεν υποστηρίζεται από ELM327. Η θερμοκρασία λαδιού παραμένει αυστηρά N/A.`;
+        // Session confirmed: now test Group 050 (`2132`)
+        const r2132 = await this.sendObdCommand('2132');
+        this.recordCommandLog(
+          '17-INST:2132',
+          r2132 || 'NO DATA',
+          'Έλεγχος Group 050 (G266) στο 17-Instruments',
+          0,
+          !r2132.includes('61')
+        );
+
+        const cells50 = this.decodeKwpBlockResponse(r2132, '32');
+        if (cells50) {
+          // In 17-Instruments Group 050, Field 3 is Oil Temperature G266 in °C (Formula 0x05 / 0x08)
+          const field3Str = cells50[2];
+          const parsedTemp = parseFloat(field3Str);
+          if (field3Str.includes('°C') && !isNaN(parsedTemp) && parsedTemp >= 30 && parsedTemp <= 170) {
+            this.liveTelemetry.oilTemp = Math.round(parsedTemp);
+            this.pushLiveTelemetryUpdate();
+            resultMsg = `ΕΠΙΤΥΧΙΑ 17-Instruments Group 050 (2132): G266 = ${Math.round(parsedTemp)} °C [Raw: ${r2132.trim()}]`;
+          } else {
+            resultMsg = `17-Instruments απάντησε (${cells50.join(' | ')}), αλλά το πεδίο 3 δεν περιέχει έγκυρη θερμοκρασία G266. Η ένδειξη παραμένει N/A.`;
+          }
+        } else {
+          resultMsg = `Το 17-Instruments δέχθηκε το 10 89, αλλά το Group 050 (21 32) επέστρεψε: "${(r2132 || 'NO DATA').trim()}". Η θερμοκρασία G266 παραμένει αυστηρά N/A.`;
+        }
       }
     } catch (e: any) {
       resultMsg = `Σφάλμα κατά τον έλεγχο 17-Instruments: ${e.message || e}`;
     } finally {
-      // Restore standard 01-Engine OBD-II addressing and protocol
+      // Reliably restore standard 01-Engine OBD-II addressing, protocol and state
+      this.notifyStatus('Επαναφορά σύνδεσης με 01-Engine ECU...', this.mode);
       await this.sendObdCommand('ATIIA 33');
       await this.sendObdCommand('ATSH 68 6A F1');
+      await this.sendObdCommand('ATH0');
       const restoreCmd = savedProtoNum ? `ATSP${savedProtoNum.charAt(savedProtoNum.length - 1)}` : 'ATSP3';
       await this.initializeAndLockEcu(restoreCmd);
       this.debugState.instruments17G266Status = resultMsg;
@@ -1539,9 +1591,17 @@ class ObdEngine {
 
       // 1. Android Native Bridge (Bluetooth Classic RFCOMM SPP & TCP Socket)
       if (this.isNativeAndroid() && window.AndroidOBD) {
-        // CRITICAL: Yield to browser macrotask queue before synchronous JNI call so UI updates render immediately
-        await new Promise<void>(resolve => setTimeout(resolve, 4));
+        // Yield to browser macrotask queue before synchronous JNI call so UI updates render immediately
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        const tBridge = Date.now();
         const res = window.AndroidOBD.sendRawCommand(cleanCmd) || '';
+        this.lastBridgeLatencyMs = Math.max(1, Date.now() - tBridge);
+        this.recentBridgeLatencies.push(this.lastBridgeLatencyMs);
+        if (this.recentBridgeLatencies.length > 20) this.recentBridgeLatencies.shift();
+        this.debugState.lastBridgeLatencyMs = this.lastBridgeLatencyMs;
+        this.debugState.avgBridgeLatencyMs = Math.round(
+          this.recentBridgeLatencies.reduce((a, b) => a + b, 0) / this.recentBridgeLatencies.length
+        );
         return res;
       }
 
@@ -1623,6 +1683,7 @@ class ObdEngine {
       rawResponse: '-',
       parsedValue: 'N/A',
       latencyMs: 0,
+      bridgeLatencyMs: 0,
       refreshIntervalMs: 0,
       lastValidTimestampMs: 0,
       status: 'pending',
@@ -1633,6 +1694,7 @@ class ObdEngine {
 
     entry.rawResponse = raw || 'EMPTY';
     entry.latencyMs = latency;
+    entry.bridgeLatencyMs = this.lastBridgeLatencyMs > 0 ? this.lastBridgeLatencyMs : undefined;
     entry.lastUpdated = nowStr;
 
     const parsedStr = parser(raw);
@@ -1697,6 +1759,7 @@ class ObdEngine {
       rawResp: rawResp.replace(/\r|\n/g, ' ').trim() || 'EMPTY',
       parsedInfo,
       latencyMs,
+      bridgeMs: this.lastBridgeLatencyMs > 0 ? this.lastBridgeLatencyMs : undefined,
       isError
     });
     if (this.debugState.commandLogs.length > 60) {
@@ -2009,6 +2072,16 @@ class ObdEngine {
         });
         break;
 
+      case '2186':
+        await this.executeTrackedPid('2186', 'VAG KWP Group 134 (Oil Temp, IAT, Coolant Temp)', (raw) => {
+          const res = this.parseAndApplyKwpGroup('86', '134', raw);
+          if (res !== null) {
+            updated = true;
+          }
+          return res;
+        });
+        break;
+
       case 'ATRV':
         await this.executeTrackedPid('ATRV', 'Adapter Battery Voltage (Pin 16 V)', (raw) => {
           const val = this.parseVoltage(raw);
@@ -2218,27 +2291,80 @@ class ObdEngine {
   }
 
   /**
-   * Decodes a real KWP2000 Service 21 (61 <groupHex> ...) 4-cell response if the ECU answers KWP Measuring Blocks
+   * Validates a genuine positive KWP2000 StartDiagnosticSession (0x10) response:
+   * Must contain byte 0x50 immediately followed by 0x89 (i.e. '50 89') in the hex stream.
+   * Strictly rejects negative responses (7F 10 <NRC>), echoed requests, or unrelated bytes containing '50'.
+   */
+  public isKwp1089PositiveResponse(raw: string): boolean {
+    if (!raw) return false;
+    const upper = raw
+      .toUpperCase()
+      .replace(/SEARCHING\.\.\./g, '')
+      .replace(/BUS INIT:\s*OK/g, '')
+      .replace(/>/g, ' ')
+      .trim();
+
+    if (this.isNoData(upper) && !upper.includes('50')) return false;
+
+    // Reject negative response 7F 10 (e.g. 7F 10 11 / 7F 10 12 / 7F 10 22)
+    if (/7F\s*10/i.test(upper)) return false;
+
+    // Split into 2-character hex byte tokens
+    const tokens = upper.match(/[0-9A-F]{2}/gi);
+    if (!tokens || tokens.length < 2) return false;
+
+    // Scan for consecutive bytes 50 and 89
+    for (let i = 0; i < tokens.length - 1; i++) {
+      if (tokens[i].toUpperCase() === '50' && tokens[i + 1].toUpperCase() === '89') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Decodes a real KWP2000 Service 21 (61 <groupHex> ...) 4-cell response if the ECU answers KWP Measuring Blocks.
+   * Requires exact byte alignment: byte 0x61 followed by groupHex, then 12 payload bytes (4 cells * 3 bytes).
+   * Strictly rejects 7F 21 negative responses, partial frames, or misaligned hex strings.
    */
   private decodeKwpBlockResponse(rawHex: string, groupHex: string): [string, string, string, string] | null {
     if (!rawHex || this.isNoData(rawHex)) return null;
-    const clean = rawHex.toUpperCase().replace(/[^0-9A-F]/g, '');
-    const header = '61' + groupHex.toUpperCase();
-    const idx = clean.indexOf(header);
-    if (idx === -1) return null;
 
-    const payload = clean.substring(idx + header.length);
-    // Each KWP2000 measuring block cell is 3 bytes (Formula Byte + Value A + Value B = 6 hex chars)
-    if (payload.length < 24) return null;
+    const upper = rawHex
+      .toUpperCase()
+      .replace(/SEARCHING\.\.\./g, '')
+      .replace(/BUS INIT:\s*OK/g, '')
+      .replace(/>/g, ' ')
+      .trim();
+
+    if (/7F\s*21/i.test(upper)) return null;
+
+    // Split into 2-digit hex byte tokens
+    const tokens = upper.match(/[0-9A-F]{2}/gi);
+    if (!tokens || tokens.length < 14) return null; // 61 + groupHex + 12 payload bytes = 14 tokens min
+
+    const targetGroup = groupHex.toUpperCase().padStart(2, '0');
+    let dataStartIdx = -1;
+
+    for (let i = 0; i <= tokens.length - 14; i++) {
+      if (tokens[i].toUpperCase() === '61' && tokens[i + 1].toUpperCase() === targetGroup) {
+        dataStartIdx = i + 2;
+        break;
+      }
+    }
+
+    if (dataStartIdx === -1) return null;
+    if (tokens.length < dataStartIdx + 12) return null;
 
     const cells: string[] = [];
     for (let c = 0; c < 4; c++) {
-      const slice = payload.substring(c * 6, c * 6 + 6);
-      const f = parseInt(slice.substring(0, 2), 16);
-      const a = parseInt(slice.substring(2, 4), 16);
-      const b = parseInt(slice.substring(4, 6), 16);
+      const f = parseInt(tokens[dataStartIdx + c * 3], 16);
+      const a = parseInt(tokens[dataStartIdx + c * 3 + 1], 16);
+      const b = parseInt(tokens[dataStartIdx + c * 3 + 2], 16);
+      if (isNaN(f) || isNaN(a) || isNaN(b)) return null;
       cells.push(this.decodeKwpCellFormula(f, a, b));
     }
+
     return [cells[0], cells[1], cells[2], cells[3]];
   }
 
@@ -2387,6 +2513,15 @@ class ObdEngine {
       return `λAct:${cells[0]} | λSpec:${cells[1]}`;
     }
 
+    if (groupNum === '134') {
+      // Group 134: [Oil Temp °C, IAT °C, Coolant Temp °C, Engine Temp °C]
+      const oil = numVal(cells[0]);
+      if (oil !== null && oil > -30 && oil < 180) {
+        this.liveTelemetry.oilTemp = Math.round(oil);
+      }
+      return `Oil:${cells[0]} | IAT:${cells[1]} | Coolant:${cells[2]}`;
+    }
+
     return cells.join(' | ');
   }
 
@@ -2403,8 +2538,11 @@ class ObdEngine {
     if (this.mode === 'bluetooth' || this.mode === 'wifi') {
       if (!this.kwpSessionActive) {
         const r1089 = await this.sendObdCommand('1089');
-        if (r1089 && r1089.replace(/\s+/g, '').includes('50')) {
+        if (this.isKwp1089PositiveResponse(r1089)) {
           this.kwpSessionActive = true;
+          this.debugState.kwpSessionStatus = `ΕΝΕΡΓΗ (1089 -> 50 89)`;
+        } else {
+          this.debugState.kwpSessionStatus = `Απορρίφθηκε (1089 -> ${(r1089 || 'NO DATA').trim()})`;
         }
       }
 

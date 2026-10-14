@@ -83,7 +83,7 @@ export const ObdDebugPanel: React.FC = () => {
     const pidLines = (Object.values(debug.pidTable) as PidDebugEntry[])
       .map(
         (p) =>
-          `${p.pid} (${p.name}): Raw="${p.rawResponse}" | Parsed="${p.parsedValue}" | Status=${p.status} | OK=${p.successCount}/Fail=${p.failCount} | Latency=${p.latencyMs}ms | RefreshInterval=${p.refreshIntervalMs}ms`
+          `${p.pid} (${p.name}): Raw="${p.rawResponse}" | Parsed="${p.parsedValue}" | Status=${p.status} | OK=${p.successCount}/Fail=${p.failCount} | Latency=${p.latencyMs}ms${p.bridgeLatencyMs ? ` (brg:${p.bridgeLatencyMs}ms)` : ''} | RefreshInterval=${p.refreshIntervalMs}ms`
       )
       .join('\n');
 
@@ -225,9 +225,13 @@ ${recentLogs}
               <span>Πλήρης Κύκλος ({debug.supportedSensorsCount} PIDs):</span>
               <strong className="text-emerald-400">{debug.loopCycleMs} ms</strong>
             </div>
-            <div className="text-[10px] font-mono text-slate-400 flex items-center gap-2">
-              <Clock className="w-3 h-3 text-slate-500" />
+            <div className="text-[10px] font-mono text-slate-400 flex items-center justify-between gap-1">
               <span>Μ.Ο. Εντολής: {debug.avgCommandMs} ms ({debug.commandsPerSecHz} cmd/s)</span>
+              {debug.avgBridgeLatencyMs > 0 && (
+                <span className="text-cyan-400 font-bold" title="Χρόνος διαδρομής Android Bridge">
+                  Bridge: {debug.avgBridgeLatencyMs} ms
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -349,7 +353,18 @@ ${recentLogs}
                     <span className="text-red-400">{row.failCount}</span>
                   </td>
                   <td className="py-2 px-2.5 text-slate-300 text-[11px]">
-                    {row.latencyMs > 0 ? `${row.latencyMs} ms` : '-'}
+                    {row.latencyMs > 0 ? (
+                      <div>
+                        <span>{row.latencyMs} ms</span>
+                        {row.bridgeLatencyMs !== undefined && row.bridgeLatencyMs > 0 && (
+                          <span className="text-[10px] text-cyan-400 block font-mono">
+                            brg: {row.bridgeLatencyMs}ms
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      '-'
+                    )}
                   </td>
                   <td className="py-2 px-2.5 text-emerald-400 font-bold text-[11px]">
                     {row.refreshIntervalMs > 0 ? `${row.refreshIntervalMs} ms` : '-'}
@@ -452,7 +467,9 @@ ${recentLogs}
                   <span className={log.isError ? 'text-red-400' : 'text-emerald-400'}>
                     {log.parsedInfo}
                   </span>
-                  <span className="text-slate-500">({log.latencyMs}ms)</span>
+                  <span className="text-slate-500">
+                    ({log.latencyMs}ms{log.bridgeMs && log.bridgeMs > 0 ? ` • brg: ${log.bridgeMs}ms` : ''})
+                  </span>
                 </div>
               </div>
             ))
