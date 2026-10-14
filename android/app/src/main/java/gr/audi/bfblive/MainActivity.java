@@ -283,7 +283,7 @@ public class MainActivity extends AppCompatActivity {
                 executeRaw("ATH0"); // Headers off
                 executeRaw("ATAT1"); // Safe adaptive timing for K-Line init
                 executeRaw("ATST 64"); // 400ms timeout for reliable K-Line 5-baud sync
-                executeRaw("ATSP3"); // ISO 9141-2 (Audi A4 B7 1.8T BFB ME7.5 primary protocol)
+                executeRaw("ATSPA4"); // Try ATSPA4 first (ISO 14230-4 KWP Auto)
                 String res0100 = executeRaw("0100"); // ECU wake up & protocol lock
                 if (res0100 != null && res0100.contains("41")) {
                     executeRaw("ATAT2");

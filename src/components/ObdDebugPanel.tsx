@@ -275,11 +275,12 @@ ${recentLogs}
           </div>
           <div className="flex items-center flex-wrap gap-1.5">
             {[
-              { cmd: 'ATSP0', label: 'Auto (ATSP0)' },
-              { cmd: 'ATSP3', label: 'ISO 9141-2 K-Line (ATSP3)' },
-              { cmd: 'ATSP5', label: 'KWP Fast (ATSP5 - ME7.5)' },
+              { cmd: 'ATSPA4', label: '★ KWP Auto (ATSPA4 - BFB)' },
               { cmd: 'ATSP4', label: 'KWP 5-Baud (ATSP4)' },
-              { cmd: 'ATSP6', label: 'CAN 500k (ATSP6)' },
+              { cmd: 'ATSPA3', label: 'ISO Auto (ATSPA3)' },
+              { cmd: 'ATSP3', label: 'ISO 9141-2 (ATSP3)' },
+              { cmd: 'ATSP5', label: 'KWP Fast (ATSP5)' },
+              { cmd: 'ATSP0', label: 'Auto (ATSP0)' },
             ].map((p) => (
               <button
                 key={p.cmd}

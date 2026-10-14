@@ -218,11 +218,11 @@ export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, statusMessage,
           </div>
           <div className="flex items-center flex-wrap gap-2 pl-6">
             <button
-              onClick={() => handleForceProtocol('ATSP3')}
+              onClick={() => handleForceProtocol('ATSPA4')}
               disabled={reinitBusy}
-              className="px-2.5 py-1 rounded-lg bg-amber-900/70 hover:bg-amber-800 text-amber-200 text-xs font-mono font-bold border border-amber-500/40 transition cursor-pointer flex items-center gap-1"
+              className="px-2.5 py-1 rounded-lg bg-emerald-900/80 hover:bg-emerald-800 text-emerald-200 text-xs font-mono font-bold border border-emerald-500/50 transition cursor-pointer flex items-center gap-1 shadow-sm"
             >
-              <span>⚡ ATSP3 (ISO 9141-2)</span>
+              <span>★ ATSPA4 (KWP Auto - BFB)</span>
             </button>
             <button
               onClick={() => handleForceProtocol('ATSP4')}
@@ -230,6 +230,20 @@ export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, statusMessage,
               className="px-2.5 py-1 rounded-lg bg-amber-900/70 hover:bg-amber-800 text-amber-200 text-xs font-mono font-bold border border-amber-500/40 transition cursor-pointer flex items-center gap-1"
             >
               <span>⚡ ATSP4 (KWP 5-baud)</span>
+            </button>
+            <button
+              onClick={() => handleForceProtocol('ATSPA3')}
+              disabled={reinitBusy}
+              className="px-2.5 py-1 rounded-lg bg-amber-900/70 hover:bg-amber-800 text-amber-200 text-xs font-mono font-bold border border-amber-500/40 transition cursor-pointer flex items-center gap-1"
+            >
+              <span>⚡ ATSPA3 (ISO Auto)</span>
+            </button>
+            <button
+              onClick={() => handleForceProtocol('ATSP3')}
+              disabled={reinitBusy}
+              className="px-2.5 py-1 rounded-lg bg-amber-900/70 hover:bg-amber-800 text-amber-200 text-xs font-mono font-bold border border-amber-500/40 transition cursor-pointer flex items-center gap-1"
+            >
+              <span>⚡ ATSP3 (ISO 9141-2)</span>
             </button>
             <button
               onClick={() => handleForceProtocol('ATSP5')}

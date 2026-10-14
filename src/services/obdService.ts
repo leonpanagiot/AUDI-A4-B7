@@ -1460,6 +1460,38 @@ class ObdEngine {
   }
 
   /**
+   * Strictly confirms Mode 01 PID 00 lock only if the response contains '41 00'
+   * followed by 4 valid hex bytes (8 hex characters) representing the 32-bit supported PID bitmask.
+   */
+  private validatePid00Response(rawResp: string): { valid: boolean; rawClean: string; bytes: number[] | null } {
+    if (!rawResp) return { valid: false, rawClean: '', bytes: null };
+    const upper = rawResp.toUpperCase().replace(/SEARCHING\.\.\./g, '').replace(/BUS INIT:\s*OK/g, '');
+    if (this.isNoData(upper) || upper.includes('UNABLE') || upper.includes('ERROR') || upper.includes('STOPPED') || upper.includes('?')) {
+      return { valid: false, rawClean: rawResp.trim(), bytes: null };
+    }
+
+    const cleanHex = upper.replace(/[^0-9A-F]/g, '');
+    const idx = cleanHex.indexOf('4100');
+    if (idx === -1) {
+      return { valid: false, rawClean: rawResp.trim(), bytes: null };
+    }
+
+    const bitmaskHex = cleanHex.substring(idx + 4, idx + 4 + 8);
+    if (bitmaskHex.length < 8) {
+      return { valid: false, rawClean: rawResp.trim(), bytes: null };
+    }
+
+    const bytes: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const b = parseInt(bitmaskHex.substring(i * 2, i * 2 + 2), 16);
+      if (isNaN(b)) return { valid: false, rawClean: rawResp.trim(), bytes: null };
+      bytes.push(b);
+    }
+
+    return { valid: true, rawClean: rawResp.trim(), bytes };
+  }
+
+  /**
    * Decodes a 4-byte 0100/0120/0140 bitmask response and marks unsupported PIDs so we never stall on NO DATA
    */
   private applyPidSupportBitmask(rawResp: string, rangeStartPid: number): void {
@@ -1502,74 +1534,93 @@ class ObdEngine {
       // Allow any in-flight native initElm327() K-Line 5-baud handshake to finish cleanly
       await this.sleep(350);
 
-      await this.sendObdCommand('ATE0'); // Echo Off
-      await this.sendObdCommand('ATL0'); // Linefeeds Off
-      await this.sendObdCommand('ATS1'); // Spaces On (reliable framing across all K-Line clones)
-      await this.sendObdCommand('ATH0'); // Headers Off
-      await this.sendObdCommand('ATAT1'); // Safe Adaptive Timing during K-Line handshake
-      await this.sendObdCommand('ATST 64'); // 400ms timeout for reliable K-Line 5-baud sync & key bytes
+      // Helper to execute an init step, measure exact duration, and log it to debug
+      const executeLoggedStep = async (cmd: string, description: string): Promise<string> => {
+        const t0 = performance.now();
+        const resp = await this.sendObdCommand(cmd);
+        const durMs = Math.max(0.1, Math.round((performance.now() - t0) * 10) / 10);
+        const isErr = this.isNoData(resp) || resp.toUpperCase().includes('ERROR') || resp.toUpperCase().includes('UNABLE');
+        this.recordCommandLog(cmd, resp, `${description} [${durMs}ms]`, durMs, isErr);
+        this.notifyDebug();
+        return resp;
+      };
+
+      // 1. Adapter Basic Setup (K-Line framing and safe 400ms timeout)
+      await executeLoggedStep('ATE0', 'Echo Off');
+      await executeLoggedStep('ATL0', 'Linefeeds Off');
+      await executeLoggedStep('ATS1', 'Spaces On (K-Line framing)');
+      await executeLoggedStep('ATH0', 'Headers Off');
+      await executeLoggedStep('ATAT1', 'Adaptive Timing Auto 1');
+      await executeLoggedStep('ATST 64', 'Timeout 400ms (Safe K-Line Handshake)');
       this.debugState.kLineTimingConfig = 'ATAT1 + ATST 64 (Handshake)';
 
-      // 1. Read ELM327 Chip Version
-      const atiResp = await this.sendObdCommand('ATI');
+      // 2. Read Adapter Information & Pin 16 Voltage
+      const atiResp = await executeLoggedStep('ATI', 'Read ELM327 Version');
       if (atiResp) {
         this.debugState.elmVersion = atiResp.replace(/AT\s*I/i, '').trim() || 'ELM327 Compatible';
       }
 
-      // 2. Read Battery Voltage immediately from Pin 16
-      const voltResp = await this.executeTrackedPid('ATRV', 'Adapter Battery Voltage (Pin 16 V)', (r) => {
-        const v = this.parseVoltage(r);
-        if (v !== null) {
-          this.liveTelemetry.batteryVoltage = v;
-          return `${v.toFixed(1)} V`;
-        }
-        return null;
-      });
-      this.pushLiveTelemetryUpdate();
-      this.notifyDebug();
-
-      // Helper to test 0100 lock without aborting K-Line 5-baud BUS INIT
-      const tryLockWith0100 = async (): Promise<string | null> => {
-        const initResp = await this.sendObdCommand('0100');
-        const upper = (initResp || '').toUpperCase();
-        if (upper.includes('41') && !upper.includes('UNABLE') && !upper.includes('ERROR')) {
-          return initResp;
-        }
-        return null;
-      };
+      const atrvResp = await executeLoggedStep('ATRV', 'Read Adapter Battery Voltage');
+      const voltVal = this.parseVoltage(atrvResp);
+      if (voltVal !== null) {
+        this.liveTelemetry.batteryVoltage = voltVal;
+        this.pushLiveTelemetryUpdate();
+      }
 
       let locked = false;
 
-      // 3A. First check if ECU is ALREADY locked from native initElm327() before resetting protocol with ATSPx
+      // 3A. First check if ECU is ALREADY locked from native initElm327()
       if (!forcedProtocolCmd) {
         this.notifyStatus('Έλεγχος ενεργής σύνδεσης ECU (0100)...', this.mode);
-        const initialCheck = await tryLockWith0100();
-        if (initialCheck) {
+        const t0 = performance.now();
+        const initialCheck = await this.sendObdCommand('0100');
+        const durMs = Math.max(0.1, Math.round((performance.now() - t0) * 10) / 10);
+        const val = this.validatePid00Response(initialCheck);
+        if (val.valid && val.bytes) {
           locked = true;
+          const maskHex = val.bytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+          this.recordCommandLog('0100', initialCheck, `ECU ALREADY LOCKED [${durMs}ms] - Bitmask: ${maskHex}`, durMs, false);
           this.debugState.supportedPids0120 = initialCheck;
           this.applyPidSupportBitmask(initialCheck, 1);
+        } else {
+          this.recordCommandLog('0100', initialCheck, `ECU not locked yet [${durMs}ms]`, durMs, true);
         }
       }
 
-      // 3B. If not yet locked, try VAG K-Line protocols in optimal order for Audi BFB ME7.5 (ATSP3 = ISO 9141-2, ATSP4 = KWP 5-baud)
+      // 3B. Try VAG K-Line protocols in optimal order for Audi BFB ME7.5:
+      // Priority 1: ATSPA4 (ISO 14230-4 KWP Auto - previously proven on Audi BFB ME7.5)
+      // Priority 2: ATSP4  (Direct ISO 14230-4 KWP 5-baud)
+      // Priority 3: ATSPA3 (ISO 9141-2 Auto)
+      // Priority 4: ATSP3  (Direct ISO 9141-2 5-baud)
+      // Priority 5: ATSP5  (ISO 14230-4 KWP Fast Init)
+      // Priority 6: ATSP0  (ELM Auto Search)
+      // STRICTLY NO ATSP6 (CAN)! Audi A4 B7 1.8T BFB uses K-Line (Pin 7). ATSP6 causes timeout freezes on ME7.5!
       if (!locked) {
         const protocolsToTry = forcedProtocolCmd
           ? [forcedProtocolCmd]
-          : ['ATSP3', 'ATSP4', 'ATSP5', 'ATSP0', 'ATSP6'];
+          : ['ATSPA4', 'ATSP4', 'ATSPA3', 'ATSP3', 'ATSP5', 'ATSP0'];
 
         for (const protoCmd of protocolsToTry) {
           if (this.mode === 'disconnected') return false;
 
           this.notifyStatus(`Κλείδωμα εγκεφάλου ECU (${protoCmd})...`, this.mode);
           await this.sleep(40);
-          await this.sendObdCommand(protoCmd);
+          await executeLoggedStep(protoCmd, `Set Protocol ${protoCmd}`);
 
-          const lockResp = await tryLockWith0100();
-          if (lockResp) {
+          const t0 = performance.now();
+          const lockResp = await this.sendObdCommand('0100');
+          const durMs = Math.max(0.1, Math.round((performance.now() - t0) * 10) / 10);
+
+          const val = this.validatePid00Response(lockResp);
+          if (val.valid && val.bytes) {
             locked = true;
+            const maskHex = val.bytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+            this.recordCommandLog('0100', lockResp, `ECU LOCKED (${protoCmd}) [${durMs}ms] - Bitmask: ${maskHex}`, durMs, false);
             this.debugState.supportedPids0120 = lockResp;
             this.applyPidSupportBitmask(lockResp, 1);
             break;
+          } else {
+            this.recordCommandLog('0100', lockResp, `Protocol ${protoCmd} failed [${durMs}ms] (No valid 41 00 bitmask)`, durMs, true);
           }
         }
       }
@@ -1577,8 +1628,8 @@ class ObdEngine {
       this.debugState.ecuLocked = locked;
 
       // 4. Query Active Protocol Name & Number
-      const dpResp = await this.sendObdCommand('ATDP');
-      const dpnResp = await this.sendObdCommand('ATDPN');
+      const dpResp = await executeLoggedStep('ATDP', 'Query Protocol Name');
+      const dpnResp = await executeLoggedStep('ATDPN', 'Query Protocol Number');
       this.debugState.protocolName = dpResp || 'Unknown';
       this.debugState.protocolNum = dpnResp || '-';
       this.notifyDebug();
@@ -1677,7 +1728,7 @@ class ObdEngine {
         );
       } else {
         this.notifyStatus(
-          `Συνδέθηκε στο Dongle (${voltResp ? this.liveTelemetry.batteryVoltage + 'V' : 'OK'}), αλλά η ECU δεν απάντησε. Ελέγξτε ότι ο διακόπτης είναι στο ON!`,
+          `Συνδέθηκε στο Dongle (${this.liveTelemetry.batteryVoltage ? this.liveTelemetry.batteryVoltage.toFixed(1) + 'V' : 'OK'}), αλλά η ECU (Bosch ME7.5) δεν απάντησε στο 0100. Ελέγξτε ότι ο διακόπτης μίζας είναι στο ON!`,
           this.mode
         );
       }
