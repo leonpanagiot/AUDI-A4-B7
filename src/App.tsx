@@ -8,7 +8,9 @@ import {
   Minimize2, 
   Layers,
   FlipHorizontal,
-  Terminal
+  Terminal,
+  Radio,
+  Lock
 } from 'lucide-react';
 import { obdEngine, ConnectionMode, ZERO_TELEMETRY } from './services/obdService';
 import { TelemetryData, DTCFault } from './types/telemetry';
@@ -24,7 +26,8 @@ import { DataLogger } from './components/DataLogger';
 import { ObdDebugPanel } from './components/ObdDebugPanel';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'cockpit' | 'debug' | 'vagblocks' | 'dtc' | 'timer' | 'logger'>('cockpit');
+  const [isEcuLocked, setIsEcuLocked] = useState<boolean>(() => obdEngine.getDebugState().ecuLocked);
+  const [activeTab, setActiveTab] = useState<'connect' | 'cockpit' | 'debug' | 'vagblocks' | 'dtc' | 'timer' | 'logger'>('connect');
   const [isHudOpen, setIsHudOpen] = useState(false);
 
   const [telemetry, setTelemetry] = useState<TelemetryData>({
@@ -48,6 +51,16 @@ export default function App() {
         setStatusMessage(status);
         setConnectionMode(mode);
         setActiveDTCs(obdEngine.getActiveDTCs());
+        if (mode === 'disconnected') {
+          setIsEcuLocked(false);
+          setActiveTab('connect');
+        }
+      },
+      onDebugUpdate: (dbg) => {
+        setIsEcuLocked(dbg.ecuLocked);
+        if (dbg.ecuLocked) {
+          setActiveTab((prev) => (prev === 'connect' ? 'cockpit' : prev));
+        }
       },
       onError: (err) => {
         setStatusMessage(`Σφάλμα: ${err}`);
@@ -202,66 +215,100 @@ export default function App() {
 
         {/* Navigation Tabs Bar */}
         <div className="max-w-7xl mx-auto mt-2 pt-2 border-t border-slate-800/60 flex items-center gap-1 sm:gap-1.5 overflow-x-auto no-scrollbar text-xs">
+          {/* Connection Tab (Always available, highlighted before lock) */}
           <button
-            onClick={() => setActiveTab('cockpit')}
+            onClick={() => setActiveTab('connect')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'cockpit'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
+              activeTab === 'connect'
+                ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
             }`}
           >
-            <Gauge className="w-3.5 h-3.5" />
+            <Radio className="w-3.5 h-3.5" />
+            <span>Σύνδεση OBD2 {isEcuLocked && '✓'}</span>
+          </button>
+
+          <button
+            onClick={() => isEcuLocked && setActiveTab('cockpit')}
+            disabled={!isEcuLocked}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition whitespace-nowrap ${
+              !isEcuLocked
+                ? 'opacity-40 cursor-not-allowed text-slate-500'
+                : activeTab === 'cockpit'
+                ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
+            }`}
+            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU (ECU LOCK)' : 'Ζωντανά Όργανα'}
+          >
+            {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Gauge className="w-3.5 h-3.5" />}
             <span>Ζωντανά Όργανα</span>
           </button>
 
           <button
-            onClick={() => setActiveTab('vagblocks')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'vagblocks'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            onClick={() => isEcuLocked && setActiveTab('vagblocks')}
+            disabled={!isEcuLocked}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition whitespace-nowrap ${
+              !isEcuLocked
+                ? 'opacity-40 cursor-not-allowed text-slate-500'
+                : activeTab === 'vagblocks'
+                ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
+            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'VAG Measuring Blocks'}
           >
-            <Layers className="w-3.5 h-3.5 text-blue-400" />
+            {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Layers className="w-3.5 h-3.5 text-blue-400" />}
             <span>VAG Groups (001-255)</span>
           </button>
 
           <button
-            onClick={() => setActiveTab('logger')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'logger'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            onClick={() => isEcuLocked && setActiveTab('logger')}
+            disabled={!isEcuLocked}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition whitespace-nowrap ${
+              !isEcuLocked
+                ? 'opacity-40 cursor-not-allowed text-slate-500'
+                : activeTab === 'logger'
+                ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
+            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'Datalogger CSV'}
           >
-            <Database className="w-3.5 h-3.5" />
+            {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Database className="w-3.5 h-3.5" />}
             <span>Datalogger CSV</span>
           </button>
 
           <button
-            onClick={() => setActiveTab('dtc')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'dtc'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            onClick={() => isEcuLocked && setActiveTab('dtc')}
+            disabled={!isEcuLocked}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition whitespace-nowrap ${
+              !isEcuLocked
+                ? 'opacity-40 cursor-not-allowed text-slate-500'
+                : activeTab === 'dtc'
+                ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
+            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'Διαγνωστικό DTC'}
           >
-            <Wrench className="w-3.5 h-3.5" />
+            {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Wrench className="w-3.5 h-3.5" />}
             <span>Διαγνωστικό DTC {activeDTCs.length > 0 && `(${activeDTCs.length})`}</span>
           </button>
 
           <button
-            onClick={() => setActiveTab('timer')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'timer'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            onClick={() => isEcuLocked && setActiveTab('timer')}
+            disabled={!isEcuLocked}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition whitespace-nowrap ${
+              !isEcuLocked
+                ? 'opacity-40 cursor-not-allowed text-slate-500'
+                : activeTab === 'timer'
+                ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
+            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'Χρονόμετρο 0-100'}
           >
-            <Timer className="w-3.5 h-3.5" />
+            {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Timer className="w-3.5 h-3.5" />}
             <span>0-100 km/h</span>
           </button>
 
+          {/* Debug Console tab (Always accessible before and after connection) */}
           <button
             onClick={() => setActiveTab('debug')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
@@ -278,8 +325,50 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl mx-auto w-full p-3 sm:p-6 space-y-5">
-        {/* Tab 1: Cockpit / Telemetry */}
-        {activeTab === 'cockpit' && (
+        {/* Initial Connection Hub View (Shown on launch until ECU is locked) */}
+        {(activeTab === 'connect' || (!isEcuLocked && activeTab !== 'debug')) && (
+          <div className="space-y-6">
+            <ThrottleSimulatorControl
+              mode={connectionMode}
+              onResetPeak={handleResetPeak}
+              statusMessage={statusMessage}
+              onOpenDebug={() => setActiveTab('debug')}
+            />
+
+            {!isEcuLocked && (
+              <div className="bg-[#0b101c]/90 border border-slate-800 rounded-2xl p-6 sm:p-8 text-center space-y-4 shadow-xl">
+                <div className="w-14 h-14 mx-auto rounded-full bg-blue-950/60 border border-blue-500/40 flex items-center justify-center text-blue-400 shadow-inner">
+                  <Radio className="w-7 h-7 animate-pulse" />
+                </div>
+                <div className="max-w-xl mx-auto space-y-2">
+                  <h2 className="text-lg sm:text-xl font-black font-mono tracking-wide text-white uppercase">
+                    Εκκίνηση AudiBFB Live
+                  </h2>
+                  <p className="text-sm text-slate-300 leading-relaxed font-sans">
+                    Η εφαρμογή βρίσκεται σε <strong>κατάσταση ασφαλούς αναμονής σύνδεσης</strong>.
+                    Δεν εκτελούνται παράλληλες εντολές ούτε εικονικά δεδομένα, ώστε ο αντάπτορας OBD2 (Vgate iCar / ELM327) να ξεκινήσει καθαρά.
+                  </p>
+                  <p className="text-xs text-slate-400 font-mono">
+                    Επιλέξτε <strong>WiFi OBD</strong> (192.168.0.10:35000) ή <strong>Bluetooth</strong> και πατήστε Σύνδεση.
+                  </p>
+                </div>
+
+                <div className="pt-2 flex items-center justify-center gap-3">
+                  <button
+                    onClick={() => setActiveTab('debug')}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-950/50 hover:bg-amber-900/60 border border-amber-500/40 text-amber-300 text-xs font-mono font-bold transition cursor-pointer"
+                  >
+                    <Terminal className="w-4 h-4 text-amber-400" />
+                    <span>Άνοιγμα Debug OBD2 &amp; Τερματικό</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 1: Cockpit / Telemetry (Active only once ECU is confirmed locked) */}
+        {activeTab === 'cockpit' && isEcuLocked && (
           <div className="space-y-5">
             {/* OBD-II Connection Control Bar */}
             <ThrottleSimulatorControl

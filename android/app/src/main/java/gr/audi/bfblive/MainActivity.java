@@ -284,6 +284,32 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
+        private final java.util.concurrent.ExecutorService obdExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
+
+        @JavascriptInterface
+        public void sendRawCommandAsync(final String cmd, final String callbackId) {
+            obdExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    synchronized (socketLock) {
+                        final String res = executeRaw(cmd);
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (webView != null) {
+                                    String escaped = JSONObject.quote(res);
+                                    webView.evaluateJavascript(
+                                        "if (window.__onAndroidObdResponse) { window.__onAndroidObdResponse('" + callbackId + "', " + escaped + "); }",
+                                        null
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+        }
+
         @JavascriptInterface
         public String sendRawCommand(String cmd) {
             synchronized (socketLock) {
@@ -304,9 +330,9 @@ public class MainActivity extends AppCompatActivity {
                 StringBuilder sb = new StringBuilder();
                 long startTime = System.currentTimeMillis();
                 
-                // Allow generous timeout for K-Line 5-baud handshake (ATSP4 / 0100 / 010C / 0105 takes 5-9 seconds)
+                // Calibrated timeouts for K-Line handshake (0100 / ATSPA4 / 010C)
                 // Single PIDs during live polling respond in 50-150ms and break immediately on '>'
-                long maxWait = (cleanCmd.startsWith("0100") || cleanCmd.startsWith("010C") || cleanCmd.startsWith("0105") || cleanCmd.startsWith("ATSP") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 12000 : 1000;
+                long maxWait = (cleanCmd.startsWith("0100") || cleanCmd.startsWith("010C") || cleanCmd.startsWith("0105") || cleanCmd.startsWith("ATSP") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 6500 : 750;
                 byte[] buffer = new byte[256];
 
                 while (System.currentTimeMillis() - startTime < maxWait) {
@@ -317,9 +343,9 @@ public class MainActivity extends AppCompatActivity {
                             sb.append(chunk);
                             String current = sb.toString().toUpperCase();
                             
-                            // If ELM327 is performing bus initialization, extend wait up to 14s
+                            // If ELM327 is performing K-Line 5-baud bus init, extend wait up to 9.5s
                             if (current.contains("SEARCHING") || current.contains("BUS INIT")) {
-                                maxWait = 14000;
+                                maxWait = 9500;
                             }
                             
                             // Prompt character '>' strictly marks the end of ELM327 transmission
