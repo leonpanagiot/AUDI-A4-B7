@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Cpu, Flame, Volume2, VolumeX, CheckCircle, Zap, ShieldAlert, Sparkles, Layers } from 'lucide-react';
+import { Cpu, Flame, Volume2, VolumeX, CheckCircle, Zap, ShieldAlert, Sparkles, Layers, Info, HelpCircle, AlertTriangle } from 'lucide-react';
 import { obdEngine, ENGINE_STAGES } from '../services/obdService';
 import { EngineStageId, FuelOctane } from '../types/telemetry';
 import { audioEngine } from '../services/audioEngine';
@@ -46,7 +46,7 @@ export const EngineStageSelector: React.FC<Props> = ({
   const activeConf = ENGINE_STAGES[currentStage];
 
   return (
-    <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-5">
+    <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
         <div>
@@ -58,7 +58,7 @@ export const EngineStageSelector: React.FC<Props> = ({
             </h3>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Επιλέξτε το στάδιο βελτίωσης του κινητήρα (Stock, Stage 1, Stage 2, Stage 3 K04), τύπο καυσίμου και ήχο εξάτμισης/σκάστρας.
+            Επιλέξτε το στάδιο του αυτοκινήτου σας (OEM Stock, Stage 1, Stage 2, Stage 3 K04) για σύγκριση τηλεμετρίας σε πραγματικό χρόνο.
           </p>
         </div>
 
@@ -84,6 +84,31 @@ export const EngineStageSelector: React.FC<Props> = ({
             <Sparkles className="w-3.5 h-3.5 text-blue-400" />
             <span>Σκάστρα (Blow-Off)</span>
           </button>
+        </div>
+      </div>
+
+      {/* Explanation Banner: What is this category for? */}
+      <div className="bg-gradient-to-r from-blue-950/40 via-slate-900 to-slate-900 border border-blue-500/30 rounded-xl p-4 text-xs space-y-2.5">
+        <div className="flex items-center gap-2 text-blue-400 font-bold uppercase tracking-wider">
+          <HelpCircle className="w-4 h-4" />
+          <span>Σε τι χρησιμεύει η κατηγορία «Στάδια Tuning»;</span>
+        </div>
+        <p className="text-slate-300 leading-relaxed">
+          Η επιλογή σταδίου <strong>ΔΕΝ αλλάζει το πρόγραμμα (reflash) του εγκεφάλου</strong> σας — ένα απλό OBD dongle διαβάζει μόνο δεδομένα (read-only telematics) και δεν μπορεί να προγραμματίσει την ECU.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-[11px]">
+          <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80">
+            <strong className="text-white block mb-1">1. Μέτρο Σύγκρισης (Benchmark)</strong>
+            Ορίζει την αναμενόμενη πίεση boost (π.χ. 0.6 bar για Stock ή 1.25 bar για Stage 1) ώστε τα όργανα να συγκρίνουν τι ζητάει η ECU με το τι αποδίδει το μοτέρ.
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80">
+            <strong className="text-white block mb-1">2. Έλεγχος Διαρροής (Boost Leak)</strong>
+            Αν το αμάξι σας είναι Stage 1 και στο τέρμα γκάζι βλέπετε μόνο 0.6 bar, καταλαβαίνετε αμέσως ότι έχετε διαρροή κολάρου intercooler ή κομμένη σκάστρα!
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800/80">
+            <strong className="text-white block mb-1">3. Κλίμακα Οργάνων &amp; Dyno</strong>
+            Προσαρμόζει την κόκκινη γραμμή στο μπαρόμετρο και τις κλίμακες του υπολογισμού ίππων (BHP) και ροπής (Nm).
+          </div>
         </div>
       </div>
 
@@ -141,7 +166,7 @@ export const EngineStageSelector: React.FC<Props> = ({
         <div className="flex items-center gap-3">
           <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
             <Flame className="w-4 h-4 text-amber-400" />
-            Καύσιμο (RON):
+            Καύσιμο Αναφοράς (RON):
           </span>
           <div className="flex items-center gap-1.5">
             {([95, 98, 100] as FuelOctane[]).map((oct) => (
@@ -164,7 +189,7 @@ export const EngineStageSelector: React.FC<Props> = ({
         <div className="text-xs text-slate-400 flex items-center gap-2">
           <Zap className="w-4 h-4 text-emerald-400 shrink-0" />
           <span>
-            <strong>Απαιτούμενο Hardware:</strong> {activeConf.hardware}
+            <strong>Απαιτούμενο Hardware για {activeConf.badge}:</strong> {activeConf.hardware}
           </span>
         </div>
       </div>

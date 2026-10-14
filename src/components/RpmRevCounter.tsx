@@ -55,15 +55,15 @@ export const RpmRevCounter: React.FC<Props> = ({ rpm, speed, size = 280 }) => {
         <svg viewBox="0 0 300 300" className="w-full h-full drop-shadow-2xl overflow-visible">
           <defs>
             <linearGradient id="bezelOuterTacho" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#334155" />
-              <stop offset="50%" stop-color="#0f172a" />
-              <stop offset="100%" stop-color="#1e293b" />
+              <stop offset="0%" stopColor="#334155" />
+              <stop offset="50%" stopColor="#0f172a" />
+              <stop offset="100%" stopColor="#1e293b" />
             </linearGradient>
 
             <radialGradient id="dialFaceTacho" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#161c28" />
-              <stop offset="70%" stop-color="#0b0f19" />
-              <stop offset="100%" stop-color="#05070c" />
+              <stop offset="0%" stopColor="#161c28" />
+              <stop offset="70%" stopColor="#0b0f19" />
+              <stop offset="100%" stopColor="#05070c" />
             </radialGradient>
 
             <filter id="rpmRedGlow" x="-20%" y="-20%" width="140%" height="140%">

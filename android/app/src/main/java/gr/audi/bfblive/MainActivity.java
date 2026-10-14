@@ -3,6 +3,7 @@ package gr.audi.bfblive;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -13,6 +14,7 @@ import android.util.Log;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
+import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -26,20 +28,20 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.webkit.WebViewAssetLoader;
 import androidx.webkit.WebViewClientCompat;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Method;
+import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.Set;
 import java.util.UUID;
 
 /**
  * AudiBFB Live - Telemetry & OBD2 Android Application
- * Package: gr.audi.bfblive
- * Purpose: Real-time telemetry, boost gauge, MAF, and DTC diagnostics for Audi 1.8T BFB engines.
- * Zero-White-Screen Architecture:
- * - Immediate dark window background
- * - Dual-layer asset loader (local asset loader + live cloud fallback)
- * - Custom dark cockpit recovery screen on network or load error
+ * Native bridge for Bluetooth Classic (ELM327 SPP) & WiFi (TCP socket)
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -47,7 +49,6 @@ public class MainActivity extends AppCompatActivity {
     private static final int PERMISSION_REQUEST_CODE = 101;
     private static final UUID SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
 
-    // URLs
     public static final String CLOUD_URL = "https://ais-pre-fuhi5dyy6h5gorn3obts2c-689566411669.europe-west1.run.app";
     public static final String LOCAL_URL = "https://appassets.androidplatform.net/assets/index.html";
 
@@ -56,24 +57,20 @@ public class MainActivity extends AppCompatActivity {
     private BluetoothSocket obdSocket;
     private OutputStream obdOutputStream;
     private InputStream obdInputStream;
-    private boolean isObdConnected = false;
-
-    // WiFi OBD-II configuration (Default ELM327 WiFi: 192.168.0.10:35000)
-    private String wifiHost = "192.168.0.10";
-    private int wifiPort = 35000;
     private Socket wifiSocket;
+    private final Object socketLock = new Object();
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Immediate dark window canvas before rendering to eliminate white screen flash
+        bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+
         if (getWindow() != null) {
             getWindow().setBackgroundDrawable(new ColorDrawable(Color.parseColor("#070A12")));
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             
-            // Immersive full-screen automotive cockpit mode
             getWindow().getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                     | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
@@ -105,7 +102,6 @@ public class MainActivity extends AppCompatActivity {
 
     @SuppressLint("SetJavaScriptEnabled")
     private void setupWebView() {
-        // Enforce dark background on WebView viewport
         webView.setBackgroundColor(Color.parseColor("#070A12"));
 
         WebSettings settings = webView.getSettings();
@@ -124,10 +120,11 @@ public class MainActivity extends AppCompatActivity {
             settings.setSafeBrowsingEnabled(false);
         }
 
-        // Hardware Acceleration for 60fps gauge animations
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
-        // Asset Loader for local offline assets
+        // Native OBD Bridge for ELM327 Bluetooth Classic & WiFi
+        webView.addJavascriptInterface(new ObdNativeBridge(), "AndroidOBD");
+
         final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
                 .setDomain("appassets.androidplatform.net")
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
@@ -145,12 +142,10 @@ public class MainActivity extends AppCompatActivity {
                 super.onReceivedError(view, errorCode, description, failingUrl);
                 Log.w(TAG, "WebView load error: " + errorCode + " [" + description + "] URL: " + failingUrl);
 
-                // If local assets failed, automatically fallback to live cloud server
                 if (failingUrl != null && (failingUrl.contains("appassets.androidplatform.net") || failingUrl.startsWith("file:"))) {
                     Log.i(TAG, "Falling back to Live Cloud Web App: " + CLOUD_URL);
                     view.loadUrl(CLOUD_URL);
                 } else if (failingUrl != null && failingUrl.equals(CLOUD_URL)) {
-                    // If cloud also failed, render dark cockpit error screen (NEVER white)
                     showErrorRecoveryScreen(view, description);
                 }
             }
@@ -165,21 +160,204 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onPermissionRequest(final PermissionRequest request) {
-                // Grant Web Bluetooth / Audio / Sensor permissions
                 runOnUiThread(() -> request.grant(request.getResources()));
             }
         });
 
-        // Determine launch target
         boolean hasLocal = checkHasLocalAssets();
         Log.i(TAG, "Local index.html present in assets: " + hasLocal);
 
         if (hasLocal) {
             webView.loadUrl(LOCAL_URL);
         } else {
-            // Local assets not yet compiled into apk -> load cloud URL directly
             webView.loadUrl(CLOUD_URL);
         }
+    }
+
+    /**
+     * Native JavaScript Interface exposed to frontend at window.AndroidOBD
+     */
+    public class ObdNativeBridge {
+
+        @JavascriptInterface
+        public boolean isNativeApp() {
+            return true;
+        }
+
+        @JavascriptInterface
+        public String getPairedDevicesJson() {
+            JSONArray arr = new JSONArray();
+            if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) {
+                return arr.toString();
+            }
+
+            try {
+                if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                    Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
+                    if (pairedDevices != null) {
+                        for (BluetoothDevice device : pairedDevices) {
+                            JSONObject obj = new JSONObject();
+                            obj.put("name", device.getName() != null ? device.getName() : "Unknown OBD");
+                            obj.put("address", device.getAddress());
+                            arr.put(obj);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error listing paired devices: " + e.getMessage());
+            }
+            return arr.toString();
+        }
+
+        @JavascriptInterface
+        public boolean connectBluetooth(String address) {
+            synchronized (socketLock) {
+                closeCurrentConnections();
+                if (bluetoothAdapter == null) return false;
+
+                try {
+                    BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+                    if (device == null) return false;
+
+                    if (bluetoothAdapter.isDiscovering()) {
+                        bluetoothAdapter.cancelDiscovery();
+                    }
+
+                    BluetoothSocket socket = null;
+                    try {
+                        socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
+                        socket.connect();
+                    } catch (IOException fallbackException) {
+                        Log.w(TAG, "Standard SPP failed, trying reflection fallback...");
+                        Method m = device.getClass().getMethod("createRfcommSocket", int.class);
+                        socket = (BluetoothSocket) m.invoke(device, 1);
+                        if (socket != null) {
+                            socket.connect();
+                        }
+                    }
+
+                    if (socket != null && socket.isConnected()) {
+                        obdSocket = socket;
+                        obdInputStream = socket.getInputStream();
+                        obdOutputStream = socket.getOutputStream();
+                        initElm327();
+                        return true;
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Bluetooth connect failed: " + e.getMessage());
+                    closeCurrentConnections();
+                }
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public boolean connectWifi(String ip, int port) {
+            synchronized (socketLock) {
+                closeCurrentConnections();
+                try {
+                    Socket socket = new Socket();
+                    socket.connect(new InetSocketAddress(ip, port), 5000);
+                    socket.setSoTimeout(3000);
+                    wifiSocket = socket;
+                    obdInputStream = socket.getInputStream();
+                    obdOutputStream = socket.getOutputStream();
+                    initElm327();
+                    return true;
+                } catch (Exception e) {
+                    Log.e(TAG, "WiFi connect failed: " + e.getMessage());
+                    closeCurrentConnections();
+                    return false;
+                }
+            }
+        }
+
+        private void initElm327() {
+            try {
+                Thread.sleep(300);
+                executeRaw("ATZ");
+                Thread.sleep(400);
+                executeRaw("ATE0");
+                executeRaw("ATL0");
+                executeRaw("ATS0");
+                executeRaw("ATH0");
+                executeRaw("ATSP0");
+            } catch (Exception ignored) {}
+        }
+
+        @JavascriptInterface
+        public String sendRawCommand(String cmd) {
+            synchronized (socketLock) {
+                return executeRaw(cmd);
+            }
+        }
+
+        private String executeRaw(String cmd) {
+            if (obdOutputStream == null || obdInputStream == null) {
+                return "ERROR_NOT_CONNECTED";
+            }
+            try {
+                // Clear any leftover bytes
+                while (obdInputStream.available() > 0) {
+                    obdInputStream.read();
+                }
+
+                String fullCmd = cmd.trim() + "\r";
+                obdOutputStream.write(fullCmd.getBytes());
+                obdOutputStream.flush();
+
+                StringBuilder sb = new StringBuilder();
+                long startTime = System.currentTimeMillis();
+                byte[] buffer = new byte[128];
+
+                while (System.currentTimeMillis() - startTime < 2500) {
+                    if (obdInputStream.available() > 0) {
+                        int read = obdInputStream.read(buffer);
+                        if (read > 0) {
+                            String chunk = new String(buffer, 0, read);
+                            sb.append(chunk);
+                            if (chunk.contains(">")) {
+                                break;
+                            }
+                        }
+                    } else {
+                        Thread.sleep(15);
+                    }
+                }
+
+                String res = sb.toString().replace(">", "").trim();
+                return res.isEmpty() ? "NO_DATA" : res;
+            } catch (Exception e) {
+                Log.e(TAG, "Command execution error: " + e.getMessage());
+                return "ERROR: " + e.getMessage();
+            }
+        }
+
+        @JavascriptInterface
+        public void disconnect() {
+            synchronized (socketLock) {
+                closeCurrentConnections();
+            }
+        }
+    }
+
+    private void closeCurrentConnections() {
+        try {
+            if (obdOutputStream != null) obdOutputStream.close();
+        } catch (Exception ignored) {}
+        try {
+            if (obdInputStream != null) obdInputStream.close();
+        } catch (Exception ignored) {}
+        try {
+            if (obdSocket != null) obdSocket.close();
+        } catch (Exception ignored) {}
+        try {
+            if (wifiSocket != null) wifiSocket.close();
+        } catch (Exception ignored) {}
+        obdOutputStream = null;
+        obdInputStream = null;
+        obdSocket = null;
+        wifiSocket = null;
     }
 
     private void showErrorRecoveryScreen(WebView view, String errorDetail) {
@@ -258,13 +436,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        try {
-            if (obdSocket != null) {
-                obdSocket.close();
-            }
-            if (wifiSocket != null) {
-                wifiSocket.close();
-            }
-        } catch (IOException ignored) {}
+        closeCurrentConnections();
     }
 }

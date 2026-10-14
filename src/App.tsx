@@ -78,6 +78,7 @@ export default function App() {
       onStatusChange: (status, mode) => {
         setStatusMessage(status);
         setConnectionMode(mode);
+        setActiveDTCs(obdEngine.getActiveDTCs());
       },
       onError: (err) => {
         setStatusMessage(`Σφάλμα: ${err}`);

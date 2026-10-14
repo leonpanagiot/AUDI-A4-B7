@@ -157,12 +157,12 @@ export const DynoPowerGraph: React.FC<Props> = ({ telemetry, currentStage }) => 
           >
             <defs>
               <linearGradient id="hpAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#ef4444" stop-opacity="0.25" />
-                <stop offset="100%" stop-color="#ef4444" stop-opacity="0.0" />
+                <stop offset="0%" stopColor="#ef4444" stopOpacity="0.25" />
+                <stop offset="100%" stopColor="#ef4444" stopOpacity="0.0" />
               </linearGradient>
               <linearGradient id="torqueAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.15" />
-                <stop offset="100%" stop-color="#3b82f6" stop-opacity="0.0" />
+                <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.15" />
+                <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.0" />
               </linearGradient>
             </defs>
 

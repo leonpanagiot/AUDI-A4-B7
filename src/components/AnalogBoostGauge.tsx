@@ -61,22 +61,22 @@ export const AnalogBoostGauge: React.FC<Props> = ({
           <defs>
             {/* Outer bezel gradients */}
             <linearGradient id="bezelOuter" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#334155" />
-              <stop offset="50%" stop-color="#0f172a" />
-              <stop offset="100%" stop-color="#1e293b" />
+              <stop offset="0%" stopColor="#334155" />
+              <stop offset="50%" stopColor="#0f172a" />
+              <stop offset="100%" stopColor="#1e293b" />
             </linearGradient>
 
             <radialGradient id="dialFace" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stop-color="#161c28" />
-              <stop offset="70%" stop-color="#0b0f19" />
-              <stop offset="100%" stop-color="#05070c" />
+              <stop offset="0%" stopColor="#161c28" />
+              <stop offset="70%" stopColor="#0b0f19" />
+              <stop offset="100%" stopColor="#05070c" />
             </radialGradient>
 
             <linearGradient id="boostGlowArc" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#38bdf8" />
-              <stop offset="35%" stop-color="#f8fafc" />
-              <stop offset="75%" stop-color="#f59e0b" />
-              <stop offset="100%" stop-color="#ef4444" />
+              <stop offset="0%" stopColor="#38bdf8" />
+              <stop offset="35%" stopColor="#f8fafc" />
+              <stop offset="75%" stopColor="#f59e0b" />
+              <stop offset="100%" stopColor="#ef4444" />
             </linearGradient>
 
             <filter id="gaugeRedGlow" x="-20%" y="-20%" width="140%" height="140%">

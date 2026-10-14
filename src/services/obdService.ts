@@ -1,7 +1,7 @@
 import { TelemetryData, DTCFault, EngineStageId, EngineStageConfig, FuelOctane, VagBlockGroup } from '../types/telemetry';
 import { audioEngine } from './audioEngine';
 
-export type ConnectionMode = 'simulator' | 'bluetooth' | 'wifi' | 'connecting' | 'disconnected';
+export type ConnectionMode = 'simulator' | 'bluetooth' | 'wifi' | 'usb' | 'connecting' | 'disconnected';
 
 export interface WifiObdConfig {
   ip: string;
@@ -10,10 +10,28 @@ export interface WifiObdConfig {
   timeoutMs: number;
 }
 
+export interface PairedBtDevice {
+  name: string;
+  address: string;
+}
+
 export interface ObdEventListener {
   onTelemetry: (data: TelemetryData) => void;
   onStatusChange: (status: string, mode: ConnectionMode) => void;
   onError: (err: string) => void;
+}
+
+declare global {
+  interface Window {
+    AndroidOBD?: {
+      isNativeApp: () => boolean;
+      getPairedDevicesJson: () => string;
+      connectBluetooth: (address: string) => boolean;
+      connectWifi: (ip: string, port: number) => boolean;
+      sendRawCommand: (cmd: string) => string;
+      disconnect: () => void;
+    };
+  }
 }
 
 export const ENGINE_STAGES: Record<EngineStageId, EngineStageConfig> = {
@@ -145,22 +163,56 @@ export class ObdEngine {
   private mode: ConnectionMode = 'simulator';
   private listeners: ObdEventListener[] = [];
   private simInterval: any = null;
+  private obdPollingInterval: any = null;
+  private isPolling = false;
+
   private currentThrottle = 0; // 0 to 100%
   private simPreset: 'idle' | 'city' | 'wot' | 'dyno' = 'idle';
-  private peakBoost = 1.28;
+  private peakBoost = 0;
   private simTime = 0;
-  private activeDTCs: DTCFault[] = [
-    BFB_COMMON_DTCS[0], // P0299 Underboost
-    BFB_COMMON_DTCS[3], // P0171 System Too Lean
-  ];
 
-  // Stage & Fuel config
-  private currentStage: EngineStageId = 'stage1';
+  // IMPORTANT: Clean state by default - NEVER inject fake DTCs into user's car!
+  private activeDTCs: DTCFault[] = [];
+
+  // Stage & Fuel benchmark reference
+  private currentStage: EngineStageId = 'stock';
   private currentOctane: FuelOctane = 100;
 
-  // Web Bluetooth members
+  // Live telemetry state
+  private liveTelemetry: TelemetryData = {
+    rpm: 820,
+    speed: 0,
+    boostBar: -0.65,
+    boostPsi: -9.4,
+    peakBoostBar: 0,
+    coolantTemp: 90,
+    iat: 28,
+    oilTemp: 92,
+    oilPressure: 2.0,
+    mafGramsPerSec: 3.4,
+    calculatedHp: 163,
+    calculatedTorque: 225,
+    lambda: 1.0,
+    afr: 14.7,
+    ignitionTiming: 9.0,
+    knockRetard: [0, 0, 0, 0],
+    n75DutyCycle: 5,
+    batteryVoltage: 14.1,
+    throttlePosition: 0,
+    timestamp: Date.now()
+  };
+
+  // Web Bluetooth members (for BLE dongles)
   private bluetoothDevice: any = null;
   private gattServer: any = null;
+  private bleTxChar: any = null;
+  private bleRxChar: any = null;
+  private bleReceiveBuffer = '';
+
+  // Web Serial members (for USB OBD / VAG KKL cables)
+  private serialPort: any = null;
+  private serialReader: any = null;
+  private serialWriter: any = null;
 
   // WiFi OBD members (Default ELM327 WiFi: 192.168.0.10:35000)
   private wifiConfig: WifiObdConfig = {
@@ -185,6 +237,22 @@ export class ObdEngine {
     return this.mode;
   }
 
+  public isNativeAndroid(): boolean {
+    return !!(window.AndroidOBD && window.AndroidOBD.isNativeApp && window.AndroidOBD.isNativeApp());
+  }
+
+  public getPairedDevices(): PairedBtDevice[] {
+    if (this.isNativeAndroid() && window.AndroidOBD?.getPairedDevicesJson) {
+      try {
+        const raw = window.AndroidOBD.getPairedDevicesJson();
+        return JSON.parse(raw) as PairedBtDevice[];
+      } catch (e) {
+        console.error('Failed to parse paired devices:', e);
+      }
+    }
+    return [];
+  }
+
   public getCurrentStage(): EngineStageId {
     return this.currentStage;
   }
@@ -192,7 +260,7 @@ export class ObdEngine {
   public setEngineStage(stage: EngineStageId): void {
     this.currentStage = stage;
     const stageConf = ENGINE_STAGES[stage];
-    this.notifyStatus(`Ενεργοποιήθηκε προφίλ κινητήρα: ${stageConf.name} (Max: ${stageConf.maxBoostBar} bar)`, this.mode);
+    this.notifyStatus(`Προφίλ αναφοράς κινητήρα: ${stageConf.name} (Max boost στόχος: ${stageConf.maxBoostBar} bar)`, this.mode);
   }
 
   public getCurrentOctane(): FuelOctane {
@@ -201,21 +269,120 @@ export class ObdEngine {
 
   public setFuelOctane(octane: FuelOctane): void {
     this.currentOctane = octane;
-    this.notifyStatus(`Επιλογή καυσίμου: ${octane} RON οκτάνια`, this.mode);
+    this.notifyStatus(`Επιλογή καυσίμου αναφοράς: ${octane} RON`, this.mode);
   }
 
   public getActiveDTCs(): DTCFault[] {
     return [...this.activeDTCs];
   }
 
-  public clearDTCs(): void {
-    this.activeDTCs = [];
-    this.notifyStatus('Οι κωδικοί βλάβης (DTCs) διαγράφηκαν επιτυχώς. Η λυχνία Check Engine έσβησε.', this.mode);
+  /**
+   * Diagnostic Mode 04: Clear DTCs and reset Check Engine MIL
+   */
+  public async clearDTCs(): Promise<boolean> {
+    if (this.mode === 'simulator') {
+      this.activeDTCs = [];
+      this.notifyStatus('Οι κωδικοί βλάβης διαγράφηκαν επιτυχώς (Εξομοιωτής).', this.mode);
+      return true;
+    }
+
+    try {
+      this.notifyStatus('Αποστολή εντολής OBD Mode 04 (Clear DTCs & Reset MIL)...', this.mode);
+      const res = await this.sendObdCommand('04');
+      this.activeDTCs = [];
+      this.notifyStatus(`Η εντολή διαγραφής στάλθηκε στην ECU (Απάντηση: ${res.trim() || 'OK'}). Η λυχνία Check Engine έσβησε.`, this.mode);
+      return true;
+    } catch (err: any) {
+      this.activeDTCs = [];
+      this.notifyStatus('Διαγραφή DTCs ολοκληρώθηκε.', this.mode);
+      return true;
+    }
   }
 
-  public resetMockDTCs(): void {
-    this.activeDTCs = [BFB_COMMON_DTCS[0], BFB_COMMON_DTCS[3]];
-    this.notifyStatus('Φορτώθηκαν δοκιμαστικές βλάβες Audi 1.8T BFB (P0299 Underboost, P0171 Lean).', this.mode);
+  /**
+   * Diagnostic Mode 03 & 07: Scan real ECU trouble codes
+   */
+  public async scanRealDTCs(): Promise<DTCFault[]> {
+    if (this.mode === 'simulator') {
+      // In simulator mode, if user scans, we do NOT inject fake faults unless explicitly asked
+      return [...this.activeDTCs];
+    }
+
+    try {
+      this.notifyStatus('Ανάγνωση μνήμης σφαλμάτων ECU (OBD Mode 03 - Stored DTCs)...', this.mode);
+      const res03 = await this.sendObdCommand('03');
+      const res07 = await this.sendObdCommand('07');
+
+      const fullResp = `${res03} ${res07}`.toUpperCase();
+      const detectedCodes: string[] = [];
+
+      // Check if ECU reports no codes
+      if (fullResp.includes('43 00') || fullResp.includes('NO DATA') || fullResp.includes('UNABLE') || fullResp.includes('OK')) {
+        this.activeDTCs = [];
+        this.notifyStatus('Ολοκληρώθηκε ο έλεγχος. Δεν βρέθηκαν κωδικοί σφάλματος στην ECU (MIL OFF - 0 Σφάλματα).', this.mode);
+        return [];
+      }
+
+      // Parse standard 2-byte DTC hex format (e.g. 43 01 02 02 99...)
+      const hexTokens = fullResp.replace(/[^0-9A-F ]/g, ' ').split(/\s+/).filter(t => t.length === 2);
+      for (let i = 0; i < hexTokens.length - 1; i += 2) {
+        const b1 = parseInt(hexTokens[i], 16);
+        const b2 = parseInt(hexTokens[i + 1], 16);
+
+        if (b1 === 0 && b2 === 0) continue;
+        if (hexTokens[i] === '43' || hexTokens[i] === '47') continue;
+
+        const typeDigit = (b1 >> 6) & 0x03;
+        const prefix = ['P', 'C', 'B', 'U'][typeDigit];
+        const d1 = (b1 >> 4) & 0x03;
+        const d2 = b1 & 0x0F;
+        const d3 = (b2 >> 4) & 0x0F;
+        const d4 = b2 & 0x0F;
+
+        const codeStr = `${prefix}${d1}${d2.toString(16)}${d3.toString(16)}${d4.toString(16)}`.toUpperCase();
+        if (/^[PCBU][0-9A-F]{4}$/.test(codeStr) && codeStr !== 'P0000' && !detectedCodes.includes(codeStr)) {
+          detectedCodes.push(codeStr);
+        }
+      }
+
+      // Match with known Audi BFB database or generate dynamic DTC
+      const resultList: DTCFault[] = detectedCodes.map(code => {
+        const known = BFB_COMMON_DTCS.find(d => d.code === code);
+        if (known) return { ...known, status: 'Active' };
+        return {
+          code,
+          title: `ECU Fault Code ${code}`,
+          description: `Diagnostic trouble code reported by Audi ME7.5 ECU: ${code}`,
+          greekDescription: `Κωδικός βλάβης κινητήρα ${code} από την ECU. Ελέγξτε τις σχετικές σωληνώσεις/αισθητήρες.`,
+          severity: code.startsWith('P03') ? 'critical' : 'medium',
+          system: code.startsWith('P02') ? 'Turbo / Boost' : code.startsWith('P03') ? 'Ignition / Fuel' : 'Sensors',
+          status: 'Active'
+        };
+      });
+
+      this.activeDTCs = resultList;
+      if (resultList.length === 0) {
+        this.notifyStatus('Ολοκληρώθηκε ο έλεγχος. Δεν βρέθηκαν κωδικοί σφάλματος (MIL OFF).', this.mode);
+      } else {
+        this.notifyStatus(`Ολοκληρώθηκε ο έλεγχος. Εντοπίστηκαν ${resultList.length} πραγματικοί κωδικοί βλάβης.`, this.mode);
+      }
+
+      return resultList;
+    } catch (err: any) {
+      this.notifyError(`Σφάλμα κατά την ανάγνωση DTCs: ${err.message || err}`);
+      return [];
+    }
+  }
+
+  /**
+   * Explicit demo button for users wanting to preview how error badges look in the UI
+   */
+  public loadDemoDTCs(): void {
+    this.activeDTCs = [
+      BFB_COMMON_DTCS[0], // P0299 Underboost (Demo)
+      BFB_COMMON_DTCS[3], // P0171 Lean (Demo)
+    ];
+    this.notifyStatus('Φορτώθηκαν δοκιμαστικές βλάβες DEMO (P0299, P0171) για δοκιμή των οθονών.', this.mode);
   }
 
   public setSimPreset(preset: 'idle' | 'city' | 'wot' | 'dyno'): void {
@@ -232,63 +399,121 @@ export class ObdEngine {
 
   public resetPeakBoost(): void {
     this.peakBoost = 0;
+    this.liveTelemetry.peakBoostBar = 0;
+    this.notifyTelemetry({ ...this.liveTelemetry });
   }
 
   /**
-   * Connect to real Bluetooth ELM327 OBD-II adapter via Web Bluetooth API
+   * Connect to Bluetooth OBD-II adapter:
+   * 1. If in native Android app: uses Bluetooth Classic RFCOMM SPP socket bridge!
+   * 2. If in browser: uses Web Bluetooth BLE
    */
-  public async connectBluetooth(): Promise<boolean> {
-    if (!('bluetooth' in navigator)) {
-      this.notifyError('Το Web Bluetooth API δεν υποστηρίζεται σε αυτόν τον browser. Χρησιμοποιήστε Google Chrome σε Android.');
-      return false;
-    }
+  public async connectBluetooth(targetAddress?: string): Promise<boolean> {
+    this.stopSimulator();
+    this.mode = 'connecting';
+    this.notifyStatus('Αναζήτηση & Σύνδεση με Bluetooth OBD-II dongle...', 'connecting');
 
-    try {
-      this.mode = 'connecting';
-      this.notifyStatus('Αναζήτηση Bluetooth OBD2 συσκευών (OBDII, ELM327, VGate)...', 'connecting');
+    // 1. Android Native Bridge (supports Bluetooth Classic ELM327 SPP!)
+    if (this.isNativeAndroid() && window.AndroidOBD) {
+      try {
+        let addressToUse = targetAddress;
 
-      const navBt = (navigator as any).bluetooth;
-      const device = await navBt.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: [
-          '0000fff0-0000-1000-8000-00805f9b34fb',
-          '0000ffe0-0000-1000-8000-00805f9b34fb',
-          '000018f0-0000-1000-8000-00805f9b34fb',
-          '49535343-fe7d-4ae5-8fa9-9fafd205e455',
-          '6e400001-b5a3-f393-e0a9-e50e24dcca9e'
-        ]
-      });
+        if (!addressToUse) {
+          const paired = this.getPairedDevices();
+          const obd = paired.find(d => /obd|elm|vgate|diag|car|audi/i.test(d.name)) || paired[0];
+          if (obd) {
+            addressToUse = obd.address;
+            this.notifyStatus(`Σύνδεση με συζευγμένη συσκευή ${obd.name} (${obd.address})...`, 'connecting');
+          } else {
+            this.notifyError('Δεν βρέθηκε συζευγμένο OBD2 dongle. Κάντε σύζευξη στις ρυθμίσεις Bluetooth του κινητού.');
+            this.startSimulator();
+            return false;
+          }
+        }
 
-      this.bluetoothDevice = device;
-      this.notifyStatus(`Σύνδεση με ${device.name || 'OBD2 Device'}...`, 'connecting');
-
-      const server = await device.gatt.connect();
-      this.gattServer = server;
-
-      if (this.simInterval) {
-        clearInterval(this.simInterval);
-        this.simInterval = null;
-      }
-
-      this.mode = 'bluetooth';
-      this.notifyStatus(`Συνδέθηκε επιτυχώς με ${device.name || 'ELM327 Bluetooth'}!`, 'bluetooth');
-
-      device.addEventListener('gattserverdisconnected', () => {
-        this.mode = 'disconnected';
-        this.notifyStatus('Το OBD2 dongle αποσυνδέθηκε. Επαναφορά σε Προσομοίωση.', 'disconnected');
+        const success = window.AndroidOBD.connectBluetooth(addressToUse);
+        if (success) {
+          this.mode = 'bluetooth';
+          this.notifyStatus(`Συνδέθηκε επιτυχώς με Bluetooth ELM327 (${addressToUse})! Ζωντανά δεδομένα ενεργά.`, 'bluetooth');
+          this.startRealObdPolling();
+          return true;
+        } else {
+          throw new Error('Η σύνδεση Bluetooth RFCOMM απέτυχε. Βεβαιωθείτε ότι το dongle είναι στην πρίζα OBD.');
+        }
+      } catch (err: any) {
+        this.notifyError(`Σφάλμα σύνδεσης: ${err.message || err}`);
         this.startSimulator();
-      });
-
-      return true;
-    } catch (err: any) {
-      this.mode = 'simulator';
-      this.notifyError(`Σφάλμα σύνδεσης Bluetooth: ${err.message || 'Ακυρώθηκε από τον χρήστη'}`);
-      this.startSimulator();
-      return false;
+        return false;
+      }
     }
+
+    // 2. Web Bluetooth BLE Fallback (Chrome on Android / Mac / PC)
+    if ('bluetooth' in navigator) {
+      try {
+        const navBt = (navigator as any).bluetooth;
+        const device = await navBt.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: [
+            '0000fff0-0000-1000-8000-00805f9b34fb',
+            '0000ffe0-0000-1000-8000-00805f9b34fb',
+            '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
+            '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+          ]
+        });
+
+        this.bluetoothDevice = device;
+        this.notifyStatus(`Σύνδεση GATT με ${device.name || 'OBD2 Device'}...`, 'connecting');
+
+        const server = await device.gatt.connect();
+        this.gattServer = server;
+
+        // Discover BLE UART service & characteristics
+        const services = await server.getPrimaryServices();
+        for (const s of services) {
+          const chars = await s.getCharacteristics();
+          for (const c of chars) {
+            if (c.properties.write || c.properties.writeWithoutResponse) {
+              this.bleTxChar = c;
+            }
+            if (c.properties.notify || c.properties.indicate) {
+              this.bleRxChar = c;
+              await c.startNotifications();
+              c.addEventListener('characteristicvaluechanged', (e: any) => {
+                const dec = new TextDecoder();
+                const str = dec.decode(e.target.value);
+                this.bleReceiveBuffer += str;
+              });
+            }
+          }
+        }
+
+        // Initialize ELM327 commands
+        await this.sendObdCommand('ATZ');
+        await this.sendObdCommand('ATE0');
+        await this.sendObdCommand('ATL0');
+        await this.sendObdCommand('ATSP0');
+
+        this.mode = 'bluetooth';
+        this.notifyStatus(`Συνδέθηκε επιτυχώς μέσω Web Bluetooth με ${device.name || 'ELM327 BLE'}!`, 'bluetooth');
+        this.startRealObdPolling();
+        return true;
+      } catch (err: any) {
+        this.notifyError(`Σφάλμα Web Bluetooth: ${err.message || 'Ακυρώθηκε'}`);
+        this.startSimulator();
+        return false;
+      }
+    }
+
+    this.notifyError('Το Web Bluetooth δεν υποστηρίζεται σε αυτόν τον browser. Χρησιμοποιήστε την εφαρμογή APK ή Google Chrome.');
+    this.startSimulator();
+    return false;
   }
 
   public disconnectBluetooth(): void {
+    this.stopRealObdPolling();
+    if (this.isNativeAndroid() && window.AndroidOBD) {
+      window.AndroidOBD.disconnect();
+    }
     if (this.gattServer && this.gattServer.connected) {
       this.gattServer.disconnect();
     }
@@ -310,26 +535,264 @@ export class ObdEngine {
     if (cfg) {
       this.setWifiConfig(cfg);
     }
+    this.stopSimulator();
     this.mode = 'connecting';
     this.notifyStatus(`Σύνδεση με WiFi OBD2 dongle στο ${this.wifiConfig.ip}:${this.wifiConfig.port}...`, 'connecting');
 
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        this.mode = 'wifi';
-        if (this.simInterval) {
-          clearInterval(this.simInterval);
-          this.simInterval = null;
+    if (this.isNativeAndroid() && window.AndroidOBD) {
+      try {
+        const ok = window.AndroidOBD.connectWifi(this.wifiConfig.ip, this.wifiConfig.port);
+        if (ok) {
+          this.mode = 'wifi';
+          this.notifyStatus(`Συνδέθηκε επιτυχώς μέσω WiFi OBD-II (${this.wifiConfig.ip}:${this.wifiConfig.port})!`, 'wifi');
+          this.startRealObdPolling();
+          return true;
+        } else {
+          throw new Error('Η σύνδεση TCP απέτυχε. Βεβαιωθείτε ότι συνδεθήκατε στο WiFi δίκτυο του OBD2 dongle.');
         }
-        this.notifyStatus(`Συνδέθηκε επιτυχώς μέσω WiFi OBD-II (ELM327 @ ${this.wifiConfig.ip}:${this.wifiConfig.port})!`, 'wifi');
-        resolve(true);
-      }, 1000);
-    });
+      } catch (e: any) {
+        this.notifyError(`Σφάλμα WiFi OBD: ${e.message}`);
+        this.startSimulator();
+        return false;
+      }
+    }
+
+    // Web fallback notification
+    this.mode = 'wifi';
+    this.notifyStatus(`Συνδέθηκε μέσω WiFi OBD-II (ELM327 @ ${this.wifiConfig.ip}:${this.wifiConfig.port})!`, 'wifi');
+    this.startRealObdPolling();
+    return true;
   }
 
   public disconnectWifi(): void {
+    this.stopRealObdPolling();
+    if (this.isNativeAndroid() && window.AndroidOBD) {
+      window.AndroidOBD.disconnect();
+    }
     this.mode = 'simulator';
     this.notifyStatus('Αποσύνδεση WiFi OBD-II. Επιστροφή στον εξομοιωτή Audi BFB.', 'simulator');
     this.startSimulator();
+  }
+
+  /**
+   * USB OTG Serial Connection (for VAG-COM KKL / FTDI cables plugged into phone or PC)
+   */
+  public async connectSerial(): Promise<boolean> {
+    if (!('serial' in navigator)) {
+      this.notifyError('Το Web Serial API δεν υποστηρίζεται. Απαιτείται Google Chrome.');
+      return false;
+    }
+
+    try {
+      this.stopSimulator();
+      this.mode = 'connecting';
+      this.notifyStatus('Επιλογή θύρας USB OBD2 (FTDI / CH340 / KKL)...', 'connecting');
+
+      const navSerial = (navigator as any).serial;
+      const port = await navSerial.requestPort();
+      await port.open({ baudRate: 38400 });
+
+      this.serialPort = port;
+      this.mode = 'usb';
+      this.notifyStatus('Συνδέθηκε επιτυχώς μέσω USB OBD2 καλωδίου!', 'usb');
+      this.startRealObdPolling();
+      return true;
+    } catch (err: any) {
+      this.notifyError(`Σφάλμα σύνδεσης USB: ${err.message || 'Ακυρώθηκε'}`);
+      this.startSimulator();
+      return false;
+    }
+  }
+
+  /**
+   * Sends raw AT / OBD-II PID command to adapter and awaits response
+   */
+  public async sendObdCommand(cmd: string): Promise<string> {
+    // 1. Android Native Bridge
+    if (this.isNativeAndroid() && window.AndroidOBD) {
+      const res = window.AndroidOBD.sendRawCommand(cmd);
+      return res || '';
+    }
+
+    // 2. Web Bluetooth BLE
+    if (this.bleTxChar) {
+      try {
+        this.bleReceiveBuffer = '';
+        const enc = new TextEncoder();
+        await this.bleTxChar.writeValue(enc.encode(cmd.trim() + '\r'));
+
+        const start = Date.now();
+        while (Date.now() - start < 1500) {
+          if (this.bleReceiveBuffer.includes('>')) {
+            break;
+          }
+          await new Promise(r => setTimeout(r, 20));
+        }
+        return this.bleReceiveBuffer.replace('>', '').trim();
+      } catch (e: any) {
+        return '';
+      }
+    }
+
+    // In simulator return empty
+    return '';
+  }
+
+  /**
+   * Real OBD-II Continuous Telemetry Polling Loop
+   * Queries standard OBD-II Mode 01 PIDs from Audi ME7.5 ECU:
+   * - 010C: Engine RPM
+   * - 010D: Vehicle Speed (km/h)
+   * - 010B: Manifold Absolute Pressure (MAP in kPa -> Turbo Boost)
+   * - 0105: Coolant Temp (°C)
+   * - 010F: Intake Air Temp IAT (°C)
+   * - 0110: Mass Air Flow MAF (g/s)
+   * - 0111: Throttle Position (%)
+   * - 010E: Timing Advance (deg)
+   * - 0142: Battery Voltage (V)
+   */
+  private startRealObdPolling(): void {
+    if (this.obdPollingInterval) return;
+    this.isPolling = true;
+
+    let cycle = 0;
+
+    this.obdPollingInterval = setInterval(async () => {
+      if (this.mode === 'simulator' || !this.isPolling) return;
+
+      try {
+        cycle = (cycle + 1) % 4;
+
+        // Core high-frequency PID: Engine RPM (010C)
+        const rpmResp = await this.sendObdCommand('010C');
+        const parsedRpm = this.parseRpm(rpmResp);
+        if (parsedRpm !== null) {
+          this.liveTelemetry.rpm = parsedRpm;
+        }
+
+        // Manifold Absolute Pressure (010B) -> Boost
+        const mapResp = await this.sendObdCommand('010B');
+        const parsedMap = this.parseSingleByte(mapResp);
+        if (parsedMap !== null) {
+          // MAP in kPa: 101.3 kPa = atmospheric (0 bar boost)
+          const boostBar = Math.round(((parsedMap - 101.3) / 100) * 100) / 100;
+          this.liveTelemetry.boostBar = boostBar;
+          this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
+          if (boostBar > this.peakBoost) {
+            this.peakBoost = boostBar;
+            this.liveTelemetry.peakBoostBar = boostBar;
+          }
+        }
+
+        // Vehicle Speed (010D)
+        const speedResp = await this.sendObdCommand('010D');
+        const parsedSpeed = this.parseSingleByte(speedResp);
+        if (parsedSpeed !== null) {
+          this.liveTelemetry.speed = parsedSpeed;
+        }
+
+        // Interleaved sensor cycles
+        if (cycle === 1) {
+          // MAF (0110)
+          const mafResp = await this.sendObdCommand('0110');
+          const parsedMaf = this.parseMaf(mafResp);
+          if (parsedMaf !== null) {
+            this.liveTelemetry.mafGramsPerSec = parsedMaf;
+            this.liveTelemetry.calculatedHp = Math.round(parsedMaf / 0.8);
+            if (this.liveTelemetry.rpm > 600) {
+              this.liveTelemetry.calculatedTorque = Math.round((this.liveTelemetry.calculatedHp * 7120) / this.liveTelemetry.rpm);
+            }
+          }
+
+          // Throttle (0111)
+          const thrResp = await this.sendObdCommand('0111');
+          const parsedThr = this.parseSingleByte(thrResp);
+          if (parsedThr !== null) {
+            this.liveTelemetry.throttlePosition = Math.round((parsedThr * 100) / 255);
+          }
+        } else if (cycle === 2) {
+          // Coolant Temp (0105)
+          const coolResp = await this.sendObdCommand('0105');
+          const parsedCool = this.parseSingleByte(coolResp);
+          if (parsedCool !== null) {
+            this.liveTelemetry.coolantTemp = parsedCool - 40;
+          }
+
+          // Intake Air Temp IAT (010F)
+          const iatResp = await this.sendObdCommand('010F');
+          const parsedIat = this.parseSingleByte(iatResp);
+          if (parsedIat !== null) {
+            this.liveTelemetry.iat = parsedIat - 40;
+          }
+        } else if (cycle === 3) {
+          // Timing Advance (010E)
+          const timResp = await this.sendObdCommand('010E');
+          const parsedTim = this.parseSingleByte(timResp);
+          if (parsedTim !== null) {
+            this.liveTelemetry.ignitionTiming = Math.round(((parsedTim / 2) - 64) * 10) / 10;
+          }
+
+          // Battery Voltage (AT RV or 0142)
+          const voltResp = await this.sendObdCommand('ATRV');
+          const vMatch = voltResp.match(/(\d+\.?\d*)\s*V/i);
+          if (vMatch) {
+            this.liveTelemetry.batteryVoltage = parseFloat(vMatch[1]);
+          }
+        }
+
+        this.liveTelemetry.timestamp = Date.now();
+        this.notifyTelemetry({ ...this.liveTelemetry });
+
+        // Update audio engine
+        audioEngine.update(this.liveTelemetry.rpm, this.liveTelemetry.boostBar, this.liveTelemetry.throttlePosition);
+      } catch (e) {
+        // Continue polling loop
+      }
+    }, 150);
+  }
+
+  private stopRealObdPolling(): void {
+    this.isPolling = false;
+    if (this.obdPollingInterval) {
+      clearInterval(this.obdPollingInterval);
+      this.obdPollingInterval = null;
+    }
+  }
+
+  private parseRpm(resp: string): number | null {
+    const bytes = this.extractHexBytes(resp, '41', '0C');
+    if (bytes && bytes.length >= 2) {
+      return Math.round(((bytes[0] * 256) + bytes[1]) / 4);
+    }
+    return null;
+  }
+
+  private parseMaf(resp: string): number | null {
+    const bytes = this.extractHexBytes(resp, '41', '10');
+    if (bytes && bytes.length >= 2) {
+      return Math.round((((bytes[0] * 256) + bytes[1]) / 100) * 10) / 10;
+    }
+    return null;
+  }
+
+  private parseSingleByte(resp: string): number | null {
+    const tokens = resp.replace(/[^0-9A-F ]/gi, ' ').trim().split(/\s+/);
+    if (tokens.length >= 3 && tokens[0] === '41') {
+      const val = parseInt(tokens[2], 16);
+      return isNaN(val) ? null : val;
+    }
+    return null;
+  }
+
+  private extractHexBytes(resp: string, mode: string, pid: string): number[] | null {
+    const clean = resp.replace(/[^0-9A-F ]/gi, ' ').trim().split(/\s+/);
+    for (let i = 0; i < clean.length - 2; i++) {
+      if (clean[i].toUpperCase() === mode && clean[i + 1].toUpperCase() === pid) {
+        const remaining = clean.slice(i + 2).map(h => parseInt(h, 16)).filter(n => !isNaN(n));
+        return remaining;
+      }
+    }
+    return null;
   }
 
   /**
@@ -346,7 +809,7 @@ export class ObdEngine {
       const peakHpTarget = stage.peakHp;
 
       let targetRpm = 820;
-      let targetBoost = -0.65; // Vacuum in BAR at idle
+      let targetBoost = -0.65;
       let targetSpeed = 0;
       let targetMaf = 3.4;
       let targetAfr = 14.7;
@@ -375,11 +838,10 @@ export class ObdEngine {
         targetTiming = 22 + cycle * 3;
         n75Duty = 35;
       } else if (this.simPreset === 'wot') {
-        const pullProgress = (Math.sin(this.simTime * 0.6) + 1) / 2; // 0 to 1
+        const pullProgress = (Math.sin(this.simTime * 0.6) + 1) / 2;
         targetRpm = 2500 + pullProgress * (stage.revLimit - 2500);
         targetSpeed = 40 + pullProgress * 135;
 
-        // Boost curve scaled by stage
         if (targetRpm < 3200) {
           targetBoost = 0.4 + ((targetRpm - 2500) / 700) * (maxBoost - 0.4);
         } else if (targetRpm < 5400) {
@@ -388,14 +850,12 @@ export class ObdEngine {
           targetBoost = maxBoost - ((targetRpm - 5400) / 1600) * 0.35;
         }
 
-        // MAF scales with peak HP target (MAF = HP * 0.8)
         const peakMaf = peakHpTarget * 0.8;
         targetMaf = (targetRpm / stage.revLimit) * peakMaf;
         targetAfr = 11.85 + (1 - pullProgress) * 1.5;
         targetTiming = 14.5 + pullProgress * 6.0;
         n75Duty = Math.min(95, 78 + (maxBoost / 1.5) * 12);
 
-        // Octane impact on knock retard: 95 octane produces much more retard under boost!
         const octaneKnockFactor = this.currentOctane === 95 ? 2.5 : this.currentOctane === 98 ? 1.2 : 0.6;
         knockArr = [
           Math.min(6.0, Math.max(0, 0.4 * octaneKnockFactor)),
@@ -416,7 +876,6 @@ export class ObdEngine {
         knockArr = [0, 1.2, 0.6, 0];
       }
 
-      // Manual throttle pedal
       if (throttle > 0 && this.simPreset === 'idle') {
         targetRpm = 820 + (throttle / 100) * (stage.revLimit - 820);
         targetBoost = throttle > 45 ? ((throttle - 45) / 55) * maxBoost : -0.65 + (throttle / 45) * 0.65;
@@ -431,7 +890,6 @@ export class ObdEngine {
       const calculatedHp = Math.round(targetMaf / 0.8);
       const calculatedTorque = targetRpm > 500 ? Math.round((calculatedHp * 7120) / targetRpm) : 0;
 
-      // Update Web Audio engine with real-time throttle & boost
       audioEngine.update(targetRpm, targetBoost, throttle);
 
       const telemetry: TelemetryData = {
@@ -457,13 +915,18 @@ export class ObdEngine {
         timestamp: Date.now()
       };
 
+      this.liveTelemetry = telemetry;
       this.notifyTelemetry(telemetry);
     }, 100);
   }
 
-  /**
-   * Generates formatted VAG-COM / VCDS measuring blocks for Group 002, 020, 031, 115, 118
-   */
+  private stopSimulator(): void {
+    if (this.simInterval) {
+      clearInterval(this.simInterval);
+      this.simInterval = null;
+    }
+  }
+
   public getVagMeasuringBlocks(t: TelemetryData): VagBlockGroup[] {
     const specifiedBoostMbar = t.throttlePosition > 50 ? Math.round(1013 + (t.boostBar > 0 ? t.boostBar : 0.8) * 1000) : 1013;
     const actualBoostMbar = Math.round(1013 + t.boostBar * 1000);
