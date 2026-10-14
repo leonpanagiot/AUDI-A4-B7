@@ -299,9 +299,166 @@ const INITIAL_PID_CATALOG: Array<{ pid: string; name: string }> = [
   { pid: 'ATRV', name: 'Adapter Battery Voltage (Pin 16 V)' },
 ];
 
+export interface ValidatedPacket {
+  raw: string;
+  type: 'MODE_01' | 'MODE_21' | 'PROMPT' | 'NO_DATA' | 'SEARCHING' | 'ERROR';
+  pidHex?: string;
+  bytes?: number[];
+  kwpGroup?: string;
+  kwpRawHex?: string;
+}
+
+/**
+ * Non-blocking OBD Stream Processor:
+ * Ingests incoming character/byte chunks directly from BLE, Android SPP, or TCP sockets.
+ * Immediately identifies, extracts, and dispatches validated Mode 01 and Mode 21 (KWP2000)
+ * packets directly to the telemetry state manager without waiting for intermediate buffer accumulation.
+ */
+export class ObdStreamProcessor {
+  private buffer: string = '';
+  private promptDetected: boolean = false;
+  private onPacketValidated?: (packet: ValidatedPacket) => void;
+
+  constructor(onPacketValidated?: (packet: ValidatedPacket) => void) {
+    this.onPacketValidated = onPacketValidated;
+  }
+
+  public setPacketHandler(handler: (packet: ValidatedPacket) => void): void {
+    this.onPacketValidated = handler;
+  }
+
+  public reset(): void {
+    this.buffer = '';
+    this.promptDetected = false;
+  }
+
+  public hasPrompt(): boolean {
+    return this.promptDetected;
+  }
+
+  public getRawBuffer(): string {
+    return this.buffer;
+  }
+
+  /**
+   * Non-blocking ingestion of streaming data chunks.
+   * Dispatches validated packets to the state manager immediately upon detection.
+   */
+  public feed(chunk: string, activeCmd?: string): ValidatedPacket[] {
+    if (!chunk) return [];
+    this.buffer += chunk;
+    const dispatched: ValidatedPacket[] = [];
+
+    if (this.buffer.includes('>')) {
+      this.promptDetected = true;
+    }
+
+    // Process complete lines delimited by \r or \n
+    let lineEndIdx: number;
+    while ((lineEndIdx = this.buffer.indexOf('\r')) !== -1 || (lineEndIdx = this.buffer.indexOf('\n')) !== -1) {
+      const line = this.buffer.substring(0, lineEndIdx).trim();
+      this.buffer = this.buffer.substring(lineEndIdx + 1);
+
+      if (!line || line === '>') continue;
+
+      const packet = this.parsePacketLine(line, activeCmd);
+      if (packet) {
+        dispatched.push(packet);
+        if (this.onPacketValidated) {
+          this.onPacketValidated(packet);
+        }
+      }
+    }
+
+    // Fast-path inspection for inline Mode 01 / Mode 21 frame in active stream
+    const inlinePacket = this.parseInlineFrame(this.buffer, activeCmd);
+    if (inlinePacket) {
+      dispatched.push(inlinePacket);
+      if (this.onPacketValidated) {
+        this.onPacketValidated(inlinePacket);
+      }
+    }
+
+    return dispatched;
+  }
+
+  private parsePacketLine(line: string, activeCmd?: string): ValidatedPacket | null {
+    const upper = line.toUpperCase().trim();
+    if (!upper) return null;
+
+    if (upper.includes('NO DATA') || upper.includes('NO_DATA')) {
+      return { raw: upper, type: 'NO_DATA' };
+    }
+    if (upper.includes('SEARCHING') || upper.includes('BUS INIT')) {
+      return { raw: upper, type: 'SEARCHING' };
+    }
+
+    // Mode 01 response: 41 XX [data bytes...]
+    const m01Match = upper.match(/(?:^|\s)41\s*([0-9A-F]{2})\s*([0-9A-F\s]+)/i);
+    if (m01Match) {
+      const pidHex = m01Match[1].toUpperCase();
+      const rawHexBytes = m01Match[2].replace(/\s+/g, '');
+      const bytes: number[] = [];
+      for (let i = 0; i < rawHexBytes.length - 1; i += 2) {
+        const b = parseInt(rawHexBytes.substring(i, i + 2), 16);
+        if (!isNaN(b)) bytes.push(b);
+      }
+      return {
+        raw: upper,
+        type: 'MODE_01',
+        pidHex,
+        bytes
+      };
+    }
+
+    // Mode 21 response (KWP2000 Measuring Blocks): 61 XX [data bytes...]
+    const m21Match = upper.match(/(?:^|\s)61\s*([0-9A-F]{2})\s*([0-9A-F\s]+)/i);
+    if (m21Match) {
+      const groupHex = m21Match[1].toUpperCase();
+      return {
+        raw: upper,
+        type: 'MODE_21',
+        kwpGroup: groupHex,
+        kwpRawHex: upper
+      };
+    }
+
+    return null;
+  }
+
+  private parseInlineFrame(buf: string, activeCmd?: string): ValidatedPacket | null {
+    const upper = buf.toUpperCase();
+    const idx01 = upper.indexOf('41 ');
+    if (idx01 !== -1) {
+      const sub = upper.substring(idx01);
+      const m = sub.match(/41\s*([0-9A-F]{2})\s*([0-9A-F\s]{2,20})/i);
+      if (m) {
+        const pidHex = m[1].toUpperCase();
+        const rawHexBytes = m[2].replace(/\s+/g, '');
+        if (rawHexBytes.length >= 2) {
+          const bytes: number[] = [];
+          for (let i = 0; i < rawHexBytes.length - 1; i += 2) {
+            const b = parseInt(rawHexBytes.substring(i, i + 2), 16);
+            if (!isNaN(b)) bytes.push(b);
+          }
+          return {
+            raw: sub,
+            type: 'MODE_01',
+            pidHex,
+            bytes
+          };
+        }
+      }
+    }
+    return null;
+  }
+}
+
 class ObdEngine {
   private mode: ConnectionMode = 'disconnected';
   private listeners: Set<TelemetryListener> = new Set();
+  private streamProcessor: ObdStreamProcessor;
+  private currentActiveCmd: string = '';
 
   // Bluetooth GATT references
   private bluetoothDevice: any = null;
@@ -400,7 +557,190 @@ class ObdEngine {
   };
 
   constructor() {
+    this.streamProcessor = new ObdStreamProcessor((packet) => {
+      this.dispatchStreamPacket(packet);
+    });
     this.resetPidTable();
+  }
+
+  /**
+   * Non-blocking dispatcher: Routes validated packets from the stream processor
+   * directly to the telemetry state manager immediately upon detection.
+   */
+  private dispatchStreamPacket(packet: ValidatedPacket): void {
+    if (packet.type === 'MODE_01' && packet.pidHex && packet.bytes) {
+      this.applyMode01Packet(packet.pidHex, packet.bytes, packet.raw);
+    } else if (packet.type === 'MODE_21' && packet.kwpGroup && packet.kwpRawHex) {
+      this.applyMode21Packet(packet.kwpGroup, packet.kwpRawHex);
+    }
+  }
+
+  private applyMode01Packet(pidHex: string, bytes: number[], raw: string): void {
+    let updated = false;
+    switch (pidHex.toUpperCase()) {
+      case '0C': {
+        if (bytes.length >= 2) {
+          const rpm = Math.round(((bytes[0] * 256) + bytes[1]) / 4);
+          this.liveTelemetry.rpm = rpm;
+          updated = true;
+        }
+        break;
+      }
+      case '04': {
+        if (bytes.length >= 1) {
+          const load = Math.round(((bytes[0] * 100) / 255) * 10) / 10;
+          this.liveTelemetry.engineLoad = load;
+          updated = true;
+        }
+        break;
+      }
+      case '05': {
+        if (bytes.length >= 1) {
+          const coolant = bytes[0] - 40;
+          this.liveTelemetry.coolantTemp = coolant;
+          updated = true;
+        }
+        break;
+      }
+      case '06': {
+        if (bytes.length >= 1) {
+          const stft = Math.round((((bytes[0] - 128) * 100) / 128) * 10) / 10;
+          this.liveTelemetry.shortTermFuelTrim = stft;
+          updated = true;
+        }
+        break;
+      }
+      case '07': {
+        if (bytes.length >= 1) {
+          const ltft = Math.round((((bytes[0] - 128) * 100) / 128) * 10) / 10;
+          this.liveTelemetry.longTermFuelTrim = ltft;
+          updated = true;
+        }
+        break;
+      }
+      case '0B': {
+        if (bytes.length >= 1) {
+          const mapKpa = bytes[0];
+          if (mapKpa > 10) {
+            const boostBar = Math.round(((mapKpa - 101.3) / 100) * 100) / 100;
+            this.liveTelemetry.boostBar = boostBar;
+            this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
+            if (this.peakBoost === null || boostBar > this.peakBoost) {
+              this.peakBoost = boostBar;
+              this.liveTelemetry.peakBoostBar = boostBar;
+            }
+            updated = true;
+          }
+        }
+        break;
+      }
+      case '0D': {
+        if (bytes.length >= 1) {
+          this.liveTelemetry.speed = bytes[0];
+          updated = true;
+        }
+        break;
+      }
+      case '0E': {
+        if (bytes.length >= 1) {
+          const timing = Math.round(((bytes[0] - 128) / 2) * 10) / 10;
+          this.liveTelemetry.ignitionTiming = timing;
+          updated = true;
+        }
+        break;
+      }
+      case '0F': {
+        if (bytes.length >= 1) {
+          this.liveTelemetry.iat = bytes[0] - 40;
+          updated = true;
+        }
+        break;
+      }
+      case '10': {
+        if (bytes.length >= 2) {
+          const maf = Math.round((((bytes[0] * 256) + bytes[1]) / 100) * 100) / 100;
+          this.liveTelemetry.mafGramsPerSec = maf;
+          updated = true;
+        }
+        break;
+      }
+      case '11': {
+        if (bytes.length >= 1) {
+          this.liveTelemetry.throttlePosition = Math.round((bytes[0] * 100) / 255);
+          updated = true;
+        }
+        break;
+      }
+      case '14': {
+        if (bytes.length >= 1) {
+          const v = Math.round((bytes[0] / 200) * 1000) / 1000;
+          this.liveTelemetry.o2SensorVoltage = v;
+          updated = true;
+        }
+        break;
+      }
+      case '15': {
+        if (bytes.length >= 1) {
+          const v = Math.round((bytes[0] / 200) * 1000) / 1000;
+          this.liveTelemetry.o2SensorAfterVoltage = v;
+          updated = true;
+        }
+        break;
+      }
+      case '24': {
+        if (bytes.length >= 4) {
+          const lam = Math.round((((bytes[0] * 256) + bytes[1]) / 32768) * 1000) / 1000;
+          const v = Math.round((((bytes[2] * 256) + bytes[3]) / 8192) * 100) / 100;
+          this.liveTelemetry.lambda = lam;
+          this.liveTelemetry.afr = Math.round(lam * 14.7 * 10) / 10;
+          this.liveTelemetry.o2SensorVoltage = v;
+          updated = true;
+        }
+        break;
+      }
+      case '34': {
+        if (bytes.length >= 4) {
+          const lam = Math.round((((bytes[0] * 256) + bytes[1]) / 32768) * 1000) / 1000;
+          this.liveTelemetry.lambda = lam;
+          this.liveTelemetry.afr = Math.round(lam * 14.7 * 10) / 10;
+          updated = true;
+        }
+        break;
+      }
+      case '42': {
+        if (bytes.length >= 2) {
+          const v = Math.round((((bytes[0] * 256) + bytes[1]) / 1000) * 100) / 100;
+          this.liveTelemetry.batteryVoltage = v;
+          updated = true;
+        }
+        break;
+      }
+      case '44': {
+        if (bytes.length >= 2) {
+          const lam = Math.round((((bytes[0] * 256) + bytes[1]) / 32768) * 1000) / 1000;
+          this.liveTelemetry.lambdaSpecified = lam;
+          updated = true;
+        }
+        break;
+      }
+      case '5C': {
+        if (bytes.length >= 1) {
+          this.liveTelemetry.oilTemp = bytes[0] - 40;
+          updated = true;
+        }
+        break;
+      }
+    }
+
+    if (updated) {
+      this.pushLiveTelemetryUpdate();
+    }
+  }
+
+  private applyMode21Packet(groupHex: string, rawHex: string): void {
+    const groupDecimal = parseInt(groupHex, 16).toString().padStart(3, '0');
+    this.parseAndApplyKwpGroup(groupHex, groupDecimal, rawHex);
+    this.pushLiveTelemetryUpdate();
   }
 
   private resetPidTable(): void {
@@ -917,9 +1257,18 @@ class ObdEngine {
           this.notifyDebug();
 
           this.notifyStatus(`Συνδέθηκε στο ${deviceName} (${addressToUse})! Κλείδωμα πρωτοκόλλου ECU...`, 'bluetooth');
-          await this.initializeAndLockEcu();
-          this.startRealObdPolling();
-          return true;
+          const locked = await this.initializeAndLockEcu();
+          if (locked) {
+            this.startRealObdPolling();
+            return true;
+          } else {
+            this.stopRealObdPolling();
+            this.notifyStatus(
+              `Συνδέθηκε στο Dongle, αλλά η ECU (Bosch ME7.5) δεν απάντησε. Βεβαιωθείτε ότι ο διακόπτης μίζας είναι στο ON (αναμμένο ταμπλό / κινητήρας σε λειτουργία)!`,
+              'bluetooth'
+            );
+            return false;
+          }
         } else {
           throw new Error('Η σύνδεση Bluetooth RFCOMM απέτυχε. Βεβαιωθείτε ότι το dongle είναι στην πρίζα OBD και ο διακόπτης στο ON.');
         }
@@ -970,7 +1319,9 @@ class ObdEngine {
                 const dec = new TextDecoder();
                 const str = dec.decode(e.target.value);
                 this.bleReceiveBuffer += str;
-                if (this.bleReceiveBuffer.includes('>') && this.blePromptResolver) {
+                // Feed non-blocking stream processor directly on every incoming chunk
+                this.streamProcessor.feed(str, this.currentActiveCmd);
+                if ((this.streamProcessor.hasPrompt() || this.bleReceiveBuffer.includes('>')) && this.blePromptResolver) {
                   const resolve = this.blePromptResolver;
                   this.blePromptResolver = null;
                   resolve();
@@ -987,9 +1338,18 @@ class ObdEngine {
         this.notifyDebug();
 
         this.notifyStatus(`Συνδέθηκε με ${device.name || 'ELM327'}! Κλείδωμα πρωτοκόλλου ECU...`, 'bluetooth');
-        await this.initializeAndLockEcu();
-        this.startRealObdPolling();
-        return true;
+        const locked = await this.initializeAndLockEcu();
+        if (locked) {
+          this.startRealObdPolling();
+          return true;
+        } else {
+          this.stopRealObdPolling();
+          this.notifyStatus(
+            `Συνδέθηκε στο Dongle, αλλά η ECU (Bosch ME7.5) δεν απάντησε. Βεβαιωθείτε ότι ο διακόπτης μίζας είναι στο ON (αναμμένο ταμπλό / κινητήρας σε λειτουργία)!`,
+            'bluetooth'
+          );
+          return false;
+        }
       } catch (err: any) {
         this.debugState.lastError = err.message || 'Ακυρώθηκε';
         this.notifyDebug();
@@ -1054,9 +1414,18 @@ class ObdEngine {
           this.notifyDebug();
 
           this.notifyStatus(`Συνδέθηκε μέσω WiFi OBD-II (${this.wifiConfig.ip}:${this.wifiConfig.port})! Κλείδωμα ECU...`, 'wifi');
-          await this.initializeAndLockEcu();
-          this.startRealObdPolling();
-          return true;
+          const locked = await this.initializeAndLockEcu();
+          if (locked) {
+            this.startRealObdPolling();
+            return true;
+          } else {
+            this.stopRealObdPolling();
+            this.notifyStatus(
+              `Συνδέθηκε στο Dongle (WiFi OK), αλλά η ECU (Bosch ME7.5) δεν απάντησε. Βεβαιωθείτε ότι ο διακόπτης μίζας είναι στο ON (αναμμένο ταμπλό / κινητήρας σε λειτουργία)!`,
+              'wifi'
+            );
+            return false;
+          }
         } else {
           throw new Error('Η σύνδεση TCP απέτυχε. Βεβαιωθείτε ότι συνδεθήκατε στο WiFi δίκτυο του OBD2 dongle.');
         }
@@ -1138,8 +1507,8 @@ class ObdEngine {
       await this.sendObdCommand('ATS1'); // Spaces On (reliable framing across all K-Line clones)
       await this.sendObdCommand('ATH0'); // Headers Off
       await this.sendObdCommand('ATAT1'); // Safe Adaptive Timing during K-Line handshake
-      await this.sendObdCommand('ATST 25'); // 148ms timeout (fits well inside Android 450-650ms socket read window)
-      this.debugState.kLineTimingConfig = 'ATAT1 + ATST 25 (Handshake)';
+      await this.sendObdCommand('ATST 64'); // 400ms timeout for reliable K-Line 5-baud sync & key bytes
+      this.debugState.kLineTimingConfig = 'ATAT1 + ATST 64 (Handshake)';
 
       // 1. Read ELM327 Chip Version
       const atiResp = await this.sendObdCommand('ATI');
@@ -1161,18 +1530,10 @@ class ObdEngine {
 
       // Helper to test 0100 lock without aborting K-Line 5-baud BUS INIT
       const tryLockWith0100 = async (): Promise<string | null> => {
-        let initResp = await this.sendObdCommand('0100');
-        if (initResp.includes('41') && !initResp.toUpperCase().includes('UNABLE')) {
+        const initResp = await this.sendObdCommand('0100');
+        const upper = (initResp || '').toUpperCase();
+        if (upper.includes('41') && !upper.includes('UNABLE') && !upper.includes('ERROR')) {
           return initResp;
-        }
-        const upper = initResp.toUpperCase();
-        if ((upper.includes('SEARCHING') || upper.includes('BUS INIT')) && !upper.includes('UNABLE')) {
-          // Wait quietly so the 5-baud K-Line init completes without UART interruption
-          await this.sleep(1800);
-          initResp = await this.sendObdCommand('0100');
-          if (initResp.includes('41') && !initResp.toUpperCase().includes('UNABLE')) {
-            return initResp;
-          }
         }
         return null;
       };
@@ -1190,17 +1551,17 @@ class ObdEngine {
         }
       }
 
-      // 3B. If not yet locked, try VAG K-Line protocols in optimal order for Audi BFB ME7.5
+      // 3B. If not yet locked, try VAG K-Line protocols in optimal order for Audi BFB ME7.5 (ATSP3 = ISO 9141-2, ATSP4 = KWP 5-baud)
       if (!locked) {
         const protocolsToTry = forcedProtocolCmd
           ? [forcedProtocolCmd]
-          : ['ATSP4', 'ATSP5', 'ATSP3', 'ATSP0', 'ATSP6'];
+          : ['ATSP3', 'ATSP4', 'ATSP5', 'ATSP0', 'ATSP6'];
 
         for (const protoCmd of protocolsToTry) {
           if (this.mode === 'disconnected') return false;
 
           this.notifyStatus(`Κλείδωμα εγκεφάλου ECU (${protoCmd})...`, this.mode);
-          await this.sleep(30);
+          await this.sleep(40);
           await this.sendObdCommand(protoCmd);
 
           const lockResp = await tryLockWith0100();
@@ -1562,10 +1923,14 @@ class ObdEngine {
     this.stopRealObdPolling();
     await this.sleep(150);
     const ok = await this.initializeAndLockEcu(protoCmd);
-    if (wasPolling) {
+    if (wasPolling || ok) {
       this.startRealObdPolling();
     }
     return ok;
+  }
+
+  public async forceProtocol(protoCmd: string): Promise<boolean> {
+    return this.forceProtocolAndReinit(protoCmd);
   }
 
   public async sendManualDebugCommand(cmd: string): Promise<string> {
@@ -1604,6 +1969,8 @@ class ObdEngine {
     const run = async (): Promise<string> => {
       const cleanCmd = cmd.trim().toUpperCase();
       this.debugState.totalCommandsSent++;
+      this.currentActiveCmd = cleanCmd;
+      this.streamProcessor.reset();
 
       // 1. Android Native Bridge (Bluetooth Classic RFCOMM SPP & TCP Socket)
       if (this.isNativeAndroid() && window.AndroidOBD) {
@@ -1616,6 +1983,8 @@ class ObdEngine {
         this.debugState.avgBridgeLatencyMs = Math.round(
           this.recentBridgeLatencies.reduce((a, b) => a + b, 0) / this.recentBridgeLatencies.length
         );
+        // Non-blocking stream processor dispatch to state manager immediately upon detection
+        this.streamProcessor.feed(res, cleanCmd);
         return res;
       }
 
@@ -1631,7 +2000,7 @@ class ObdEngine {
             await this.bleTxChar.writeValue(payload);
           }
 
-          if (!this.bleReceiveBuffer.includes('>')) {
+          if (!this.streamProcessor.hasPrompt() && !this.bleReceiveBuffer.includes('>')) {
             await new Promise<void>((resolve) => {
               this.blePromptResolver = resolve;
               if (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal) {
@@ -1647,7 +2016,7 @@ class ObdEngine {
             });
           }
           this.blePromptResolver = null;
-          return this.bleReceiveBuffer.replace('>', '').trim();
+          return (this.bleReceiveBuffer || this.streamProcessor.getRawBuffer()).replace('>', '').trim();
         } catch (e: any) {
           this.blePromptResolver = null;
           return 'ERROR_BLE: ' + (e.message || e);

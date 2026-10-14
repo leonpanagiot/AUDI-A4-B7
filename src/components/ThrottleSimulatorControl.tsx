@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Bluetooth, Wifi, Settings, X, Info, Radio, Terminal, RefreshCw } from 'lucide-react';
+import { Bluetooth, Wifi, Settings, X, Info, Radio, Terminal, RefreshCw, AlertTriangle } from 'lucide-react';
 import { obdEngine, ConnectionMode, PairedBtDevice, ObdDebugState } from '../services/obdService';
 
 interface Props {
@@ -71,6 +71,15 @@ export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, statusMessage,
     setReinitBusy(true);
     try {
       await obdEngine.runFullSensorDiagnosticSweep();
+    } finally {
+      setReinitBusy(false);
+    }
+  };
+
+  const handleForceProtocol = async (proto: string) => {
+    setReinitBusy(true);
+    try {
+      await obdEngine.forceProtocol(proto);
     } finally {
       setReinitBusy(false);
     }
@@ -189,6 +198,56 @@ export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, statusMessage,
           </div>
         )}
       </div>
+
+      {/* ECU Waiting Warning & Quick Protocol Selector */}
+      {isLiveConnected && !debugInfo.ecuLocked && (
+        <div className="bg-amber-950/40 border border-amber-500/40 rounded-xl p-3 text-xs text-amber-200 space-y-2">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-semibold text-amber-300">
+                Το OBD2 Dongle είναι συνδεδεμένο, αλλά ο εγκέφαλος (Bosch ME7.5) είναι σε αναμονή (OK:0).
+              </p>
+              <p className="text-amber-200/90 text-[11px]">
+                👉 <strong>Βήμα 1 - Διακόπτης Μίζας:</strong> Βεβαιωθείτε ότι ο διακόπτης του Audi είναι γυρισμένος στο <strong>ON (Θέση II - ταμπλό αναμμένο)</strong> ή ο κινητήρας σε λειτουργία. (Αν ο διακόπτης είναι κλειστός, ο εγκέφαλος δεν τροφοδοτείται με ρεύμα).
+              </p>
+              <p className="text-amber-200/90 text-[11px]">
+                👉 <strong>Βήμα 2 - Άμεση δοκιμή πρωτοκόλλου K-Line:</strong>
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center flex-wrap gap-2 pl-6">
+            <button
+              onClick={() => handleForceProtocol('ATSP3')}
+              disabled={reinitBusy}
+              className="px-2.5 py-1 rounded-lg bg-amber-900/70 hover:bg-amber-800 text-amber-200 text-xs font-mono font-bold border border-amber-500/40 transition cursor-pointer flex items-center gap-1"
+            >
+              <span>⚡ ATSP3 (ISO 9141-2)</span>
+            </button>
+            <button
+              onClick={() => handleForceProtocol('ATSP4')}
+              disabled={reinitBusy}
+              className="px-2.5 py-1 rounded-lg bg-amber-900/70 hover:bg-amber-800 text-amber-200 text-xs font-mono font-bold border border-amber-500/40 transition cursor-pointer flex items-center gap-1"
+            >
+              <span>⚡ ATSP4 (KWP 5-baud)</span>
+            </button>
+            <button
+              onClick={() => handleForceProtocol('ATSP5')}
+              disabled={reinitBusy}
+              className="px-2.5 py-1 rounded-lg bg-amber-900/70 hover:bg-amber-800 text-amber-200 text-xs font-mono font-bold border border-amber-500/40 transition cursor-pointer flex items-center gap-1"
+            >
+              <span>⚡ ATSP5 (KWP Fast)</span>
+            </button>
+            <button
+              onClick={() => handleForceProtocol('ATSP0')}
+              disabled={reinitBusy}
+              className="px-2.5 py-1 rounded-lg bg-amber-900/70 hover:bg-amber-800 text-amber-200 text-xs font-mono font-bold border border-amber-500/40 transition cursor-pointer flex items-center gap-1"
+            >
+              <span>⚡ ATSP0 (Auto Search)</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Disconnected notice */}
       {mode === 'disconnected' && (
