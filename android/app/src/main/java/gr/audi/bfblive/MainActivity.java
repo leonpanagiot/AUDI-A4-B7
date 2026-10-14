@@ -274,16 +274,17 @@ public class MainActivity extends AppCompatActivity {
 
         private void initElm327() {
             try {
-                Thread.sleep(300);
+                Thread.sleep(200);
                 executeRaw("ATZ");
-                Thread.sleep(500);
-                executeRaw("ATE0");
-                executeRaw("ATL0");
-                executeRaw("ATS1");
-                executeRaw("ATH0");
-                executeRaw("ATAT1");
-                executeRaw("ATSP0");
-                executeRaw("0100");
+                Thread.sleep(400);
+                executeRaw("ATE0"); // Echo off
+                executeRaw("ATL0"); // Linefeeds off
+                executeRaw("ATS1"); // Spaces on
+                executeRaw("ATH0"); // Headers off
+                executeRaw("ATAT2"); // Fast adaptive timing
+                executeRaw("ATST 28"); // Fast timeout (~160ms) so unsupported PIDs don't stall!
+                executeRaw("ATSP0"); // Auto protocol search
+                executeRaw("0100"); // ECU wake up & protocol lock
             } catch (Exception ignored) {}
         }
 
@@ -312,18 +313,18 @@ public class MainActivity extends AppCompatActivity {
                 long startTime = System.currentTimeMillis();
                 byte[] buffer = new byte[128];
 
-                while (System.currentTimeMillis() - startTime < 2500) {
+                while (System.currentTimeMillis() - startTime < 900) {
                     if (obdInputStream.available() > 0) {
                         int read = obdInputStream.read(buffer);
                         if (read > 0) {
                             String chunk = new String(buffer, 0, read);
                             sb.append(chunk);
-                            if (chunk.contains(">")) {
+                            if (sb.indexOf(">") != -1) {
                                 break;
                             }
                         }
                     } else {
-                        Thread.sleep(15);
+                        Thread.sleep(6);
                     }
                 }
 

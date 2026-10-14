@@ -36,6 +36,9 @@ export interface TelemetryData {
   n75DutyCycle: number; // % wastegate duty
   batteryVoltage: number; // V
   throttlePosition: number; // %
+  o2SensorVoltage?: number; // Pre-cat O2 sensor (V)
+  o2SensorAfterVoltage?: number; // Post-cat O2 sensor after catalyst (V)
+  injectionTimeMs?: number; // Injector open time (ms)
   timestamp: number;
 }
 
