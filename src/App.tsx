@@ -4,7 +4,6 @@ import {
   Wrench, 
   Timer, 
   Database, 
-  Smartphone, 
   Maximize2, 
   Minimize2, 
   Layers,
@@ -26,12 +25,10 @@ import { HudDisplay } from './components/HudDisplay';
 import { DtcScanner } from './components/DtcScanner';
 import { PerformanceTimer } from './components/PerformanceTimer';
 import { DataLogger } from './components/DataLogger';
-import { AndroidApkCenter } from './components/AndroidApkCenter';
-import { PWAInstallButton } from './components/PWAInstallButton';
 import { ObdDebugPanel } from './components/ObdDebugPanel';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'cockpit' | 'debug' | 'vagblocks' | 'dtc' | 'tuning' | 'dyno' | 'timer' | 'logger' | 'apk'>('cockpit');
+  const [activeTab, setActiveTab] = useState<'cockpit' | 'debug' | 'vagblocks' | 'dtc' | 'tuning' | 'dyno' | 'timer' | 'logger'>('cockpit');
   const [isHudOpen, setIsHudOpen] = useState(false);
   const [currentStage, setCurrentStage] = useState<EngineStageId>('stage1');
   const [currentOctane, setCurrentOctane] = useState<FuelOctane>(100);
@@ -196,21 +193,6 @@ export default function App() {
               <span className="sm:hidden">HUD</span>
             </button>
 
-            {/* APK Center Button */}
-            <button
-              onClick={() => setActiveTab('apk')}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-950/60 hover:bg-red-900/60 border border-red-500/50 text-red-300 text-xs font-bold transition cursor-pointer"
-              title="Λήψη αρχείων APK & Project"
-            >
-              <Smartphone className="w-3.5 h-3.5 text-red-400" />
-              <span>APK</span>
-            </button>
-
-            <PWAInstallButton
-              variant="compact"
-              onNavigateToApkTab={() => setActiveTab('apk')}
-            />
-
             <button
               onClick={toggleFullscreen}
               className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
@@ -236,18 +218,6 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab('debug')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'debug'
-                ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30'
-                : 'text-amber-400 hover:text-white hover:bg-amber-950/40 border border-amber-500/30'
-            }`}
-          >
-            <Terminal className="w-3.5 h-3.5" />
-            <span>Debug &amp; Τεστ Αισθητήρων</span>
-          </button>
-
-          <button
             onClick={() => setActiveTab('vagblocks')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
               activeTab === 'vagblocks'
@@ -256,7 +226,19 @@ export default function App() {
             }`}
           >
             <Layers className="w-3.5 h-3.5 text-blue-400" />
-            <span>VAG Groups 001-120</span>
+            <span>VAG Groups (001-255)</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('logger')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
+              activeTab === 'logger'
+                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            }`}
+          >
+            <Database className="w-3.5 h-3.5" />
+            <span>Datalogger CSV</span>
           </button>
 
           <button
@@ -308,41 +290,21 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab('logger')}
+            onClick={() => setActiveTab('debug')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'logger'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              activeTab === 'debug'
+                ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30'
+                : 'text-amber-400 hover:text-white hover:bg-amber-950/40 border border-amber-500/30'
             }`}
           >
-            <Database className="w-3.5 h-3.5" />
-            <span>Datalogger CSV</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('apk')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'apk'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'text-red-400 hover:text-white hover:bg-red-950/40 border border-red-500/30'
-            }`}
-          >
-            <Smartphone className="w-3.5 h-3.5 text-red-400" />
-            <span>Android APK &amp; Project</span>
+            <Terminal className="w-3.5 h-3.5" />
+            <span>Debug &amp; Τεστ Αισθητήρων</span>
           </button>
         </div>
       </header>
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl mx-auto w-full p-3 sm:p-6 space-y-5">
-        {/* Full PWA Install Banner when on Cockpit */}
-        {activeTab === 'cockpit' && (
-          <PWAInstallButton
-            variant="full"
-            onNavigateToApkTab={() => setActiveTab('apk')}
-          />
-        )}
-
         {/* Tab 1: Cockpit / Telemetry */}
         {activeTab === 'cockpit' && (
           <div className="space-y-5">
@@ -442,11 +404,6 @@ export default function App() {
         {activeTab === 'logger' && (
           <DataLogger telemetry={telemetry} />
         )}
-
-        {/* Tab 9: Android APK & Project */}
-        {activeTab === 'apk' && (
-          <AndroidApkCenter />
-        )}
       </main>
 
       {/* Footer */}
@@ -454,9 +411,21 @@ export default function App() {
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>AudiBFB Live • Package: <code className="text-slate-300">gr.audi.bfblive</code> • {stageConfig.name}</span>
+            <span>AudiBFB Live • Audi A4 B7 1.8T 20V (Bosch ME7.5) • {stageConfig.name}</span>
           </div>
           <div className="flex items-center gap-4">
+            <button
+              onClick={() => setActiveTab('vagblocks')}
+              className="text-blue-400 hover:text-blue-300 underline underline-offset-2 cursor-pointer font-sans"
+            >
+              VAG Groups (001-255)
+            </button>
+            <button
+              onClick={() => setActiveTab('logger')}
+              className="text-slate-300 hover:text-white underline underline-offset-2 cursor-pointer font-sans"
+            >
+              Datalogger
+            </button>
             <button
               onClick={() => setActiveTab('debug')}
               className="text-amber-400 hover:text-amber-300 underline underline-offset-2 cursor-pointer font-sans"
@@ -468,12 +437,6 @@ export default function App() {
               className="text-emerald-400 hover:text-emerald-300 underline underline-offset-2 cursor-pointer font-sans"
             >
               HUD Παρμπρίζ
-            </button>
-            <button
-              onClick={() => setActiveTab('apk')}
-              className="text-red-400 hover:text-red-300 underline underline-offset-2 cursor-pointer font-sans font-medium"
-            >
-              Λήψη APK Project (.ZIP)
             </button>
           </div>
         </div>

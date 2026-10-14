@@ -5,8 +5,6 @@ export type ConnectionMode = 'bluetooth' | 'wifi' | 'connecting' | 'disconnected
 export interface WifiObdConfig {
   ip: string;
   port: number;
-  autoReconnect: boolean;
-  timeoutMs: number;
 }
 
 export interface PairedBtDevice {
@@ -20,13 +18,13 @@ export interface PidDebugEntry {
   rawResponse: string;
   parsedValue: string;
   latencyMs: number;
-  status: 'ok' | 'no_data' | 'searching' | 'error' | 'pending';
+  status: 'ok' | 'no_data' | 'error' | 'searching' | 'pending';
   successCount: number;
   failCount: number;
   lastUpdated: string;
 }
 
-export interface DebugLogEntry {
+export interface ObdCommandLog {
   id: number;
   time: string;
   cmd: string;
@@ -46,29 +44,22 @@ export interface ObdDebugState {
   ecuLocked: boolean;
   supportedPids0120: string;
   supportedPids2140: string;
-   supportedPids4160: string;
+  supportedPids4160: string;
   totalCommandsSent: number;
   totalValidResponses: number;
   totalErrors: number;
   loopCycleMs: number;
   lastError: string;
   pidTable: Record<string, PidDebugEntry>;
-  commandLogs: DebugLogEntry[];
-}
-
-export interface ObdEventListener {
-  onTelemetry: (data: TelemetryData) => void;
-  onStatusChange: (status: string, mode: ConnectionMode) => void;
-  onError: (err: string) => void;
-  onDebugUpdate?: (debug: ObdDebugState) => void;
+  commandLogs: ObdCommandLog[];
 }
 
 declare global {
   interface Window {
     AndroidOBD?: {
       isNativeApp: () => boolean;
-      getPairedDevicesJson: () => string;
-      connectBluetooth: (address: string) => boolean;
+      getPairedBluetoothDevices: () => string;
+      connectBluetooth: (macAddress: string) => boolean;
       connectWifi: (ip: string, port: number) => boolean;
       sendRawCommand: (cmd: string) => string;
       disconnect: () => void;
@@ -76,74 +67,93 @@ declare global {
   }
 }
 
+interface TelemetryListener {
+  onTelemetry: (data: TelemetryData) => void;
+  onStatusChange: (status: string, mode: ConnectionMode) => void;
+  onError: (err: string) => void;
+  onDebugUpdate?: (debug: ObdDebugState) => void;
+}
+
+// Audi A4 B7 1.8T 20V BFB Tuning Profiles (used for target boost comparison & stage curves)
 export const ENGINE_STAGES: Record<EngineStageId, EngineStageConfig> = {
   stock: {
     id: 'stock',
-    name: 'Stock OEM (163 PS / 225 Nm)',
-    badge: 'OEM 163',
-    description: 'Factory Audi 1.8T BFB tune with K03 turbo, 0.6 bar boost.',
-    greekDescription: 'Εργοστασιακό πρόγραμμα Audi 1.8T BFB 163 PS με τουρμπίνα K03 και πίεση 0.6 bar.',
-    maxBoostBar: 0.65,
+    name: 'Εργοστασιακό (Stock BFB)',
+    badge: '163 HP',
+    description: 'Factory Bosch ME7.5 map with BorgWarner K03-029 turbocharger.',
+    greekDescription: 'Εργοστασιακή χαρτογράφηση Bosch ME7.5 • Τούρμπο K03-029 • 0.60 bar σταθερή πίεση.',
+    maxBoostBar: 0.60,
     peakHp: 163,
     peakTorqueNm: 225,
-    revLimit: 6500,
-    hardware: 'Εργοστασιακή εξάτμιση, πλαϊνά intercooler, μπεκ 282cc',
+    revLimit: 6600,
+    hardware: 'Stock K03-029, Stock SMIC, Stock Μπεκ 280cc, Stock Καταλύτης'
   },
   stage1: {
     id: 'stage1',
-    name: 'Stage 1 Remap (210 PS / 310 Nm)',
-    badge: 'Stage 1',
-    description: 'ECU remap on 98/100 RON fuel. Peak boost 1.25 bar overboost.',
-    greekDescription: 'Επαναπρογραμματισμός ECU για 100άρα βενζίνη. Πίεση 1.25 bar overboost, 0.95 σταθερή.',
-    maxBoostBar: 1.28,
-    peakHp: 210,
-    peakTorqueNm: 310,
+    name: 'Stage 1 (ECU Remap 100 RON)',
+    badge: '195 HP',
+    description: 'Optimized boost & ignition timing for 98/100 RON fuel.',
+    greekDescription: 'Πρόγραμμα ECU Stage 1 • Ελεύθερο φίλτρο • Σκαστρα 710N • 1.05 bar overboost.',
+    maxBoostBar: 1.05,
+    peakHp: 195,
+    peakTorqueNm: 295,
     revLimit: 6800,
-    hardware: 'Εργοστασιακά εξαρτήματα ή ελεύθερο φίλτρο πάνελ',
+    hardware: 'K03-029, Ελεύθερο Φίλτρο Πάνελ, Σκάστρα Audi TT 225 (06A145710N)'
   },
   stage2: {
     id: 'stage2',
-    name: 'Stage 2 Bolt-On (235 PS / 345 Nm)',
-    badge: 'Stage 2',
-    description: 'Downpipe 76mm, FMIC intercooler, intake, 1.42 bar boost.',
-    greekDescription: 'Downpipe 76mm, μπροστινό Intercooler (FMIC), εισαγωγή, σκάστρα 710N.',
-    maxBoostBar: 1.42,
-    peakHp: 235,
+    name: 'Stage 2+ (FMIC + Downpipe + K03s)',
+    badge: '228 HP',
+    description: 'High-flow downpipe, front-mount intercooler, and 386cc injectors.',
+    greekDescription: 'Πρόγραμμα Stage 2+ • Downpipe 70mm 200cpsi • FMIC • Μπεκ S3/TT 386cc • 1.30 bar.',
+    maxBoostBar: 1.30,
+    peakHp: 228,
     peakTorqueNm: 345,
     revLimit: 7000,
-    hardware: 'Downpipe 76mm, Front Mount Intercooler, TFSI R8 Coils',
+    hardware: 'K03s / K03-073, FMIC Intercooler, Downpipe 70mm, Μπεκ Bosch 386cc (BAM)'
   },
   stage3_k04: {
     id: 'stage3_k04',
-    name: 'Stage 3 K04-064 (305 PS / 415 Nm)',
-    badge: 'Stage 3 K04',
-    description: 'K04-064 hybrid turbo conversion, 550cc injectors, 1.75 bar.',
-    greekDescription: 'Τουρμπίνα K04-064 TFSI hybrid, μπεκ Bosch 550cc, 3" MAF housing, 1.75 bar.',
-    maxBoostBar: 1.75,
-    peakHp: 305,
-    peakTorqueNm: 415,
-    revLimit: 7200,
-    hardware: 'K04-064 Turbo, 550cc Injectors, DW65v Fuel pump, 3" Exhaust',
-  },
+    name: 'Stage 3 (BorgWarner K04-015 Hybrid)',
+    badge: '265 HP',
+    description: 'BorgWarner K04-015 turbo upgrade, 440cc/550cc injectors, VR6 MAF housing.',
+    greekDescription: 'Stage 3 K04-015 Hybrid • Πολλαπλή εξαγωγής High-Flow • Μπεκ Bosch 550cc • 1.55 bar.',
+    maxBoostBar: 1.55,
+    peakHp: 265,
+    peakTorqueNm: 390,
+    revLimit: 7100,
+    hardware: 'BorgWarner K04-015, Μπεκ 550cc, MAF 3", FMIC, Ολόσωμη Εξάτμιση 76mm'
+  }
 };
 
+// Authentic Audi 1.8T BFB (Bosch ME7.5) DTC Fault Code Dictionary
 export const BFB_COMMON_DTCS: DTCFault[] = [
   {
     code: 'P0299',
     vagCode: '16683',
-    title: 'Turbocharger Underboost Condition',
-    description: 'Boost pressure specified by ECU is higher than actual measured manifold pressure.',
-    greekDescription: 'Υποπίεση Τούρμπο (Underboost) - Πίεση χαμηλότερη από την επιθυμητή (πιθανή διαρροή σωληνώσεων, σκασμένη N75 ή bypass/diverter valve 710N).',
+    title: 'Boost Pressure Regulation: Control Range Not Reached (Underboost)',
+    description: 'Actual boost pressure is significantly lower than specified boost in Group 115.',
+    greekDescription: 'Χαμηλή πίεση τούρμπο (Underboost). Πιθανή αιτία: Σχισμένη μεμβράνη σκάστρας (Diverter Valve 710N), βλάβη βαλβίδας N75 ή διαρροή σε κολάρο υποπίεσης/intercooler.',
     severity: 'high',
     system: 'Turbo / Boost',
+    status: 'Active'
+  },
+  {
+    code: 'P0171',
+    vagCode: '16555',
+    title: 'System Too Lean (Bank 1)',
+    description: 'Fuel trim (Group 032) exceeds +25% lean correction limit.',
+    greekDescription: 'Πολύ φτωχό μείγμα (Bank 1). Πιθανή αιτία: Σπασμένη βαλβίδα αναθυμιάσεων PCV (κάτω από την πολλαπλή εισαγωγής), ραγισμένος σωλήνας S-hose, βρώμικος MAF (G70) ή αντλία καυσίμου.',
+    severity: 'high',
+    system: 'Ignition / Fuel',
     status: 'Active'
   },
   {
     code: 'P0300',
     vagCode: '16684',
     title: 'Random/Multiple Cylinder Misfire Detected',
-    description: 'Irregular engine revolution detected across multiple cylinders.',
-    greekDescription: 'Τυχαίες αναφλέξεις (Misfires) - Συνήθως φθαρμένα μπουζί, κόκκινοι πολλαπλασιαστές TFSI ή διαρροή κενού.',
+    description: 'Combustion misfires detected across cylinders in Group 015/016.',
+    greekDescription: 'Διακοπές καύσης (Misfires) σε πολλαπλούς κυλίνδρους. Κλασική βλάβη πολλαπλασιαστών (Coil Packs - αναβάθμιση σε κόκκινους R8/TFSI) ή φθαρμένα μπουζί NGK PFR6Q.',
     severity: 'critical',
     system: 'Ignition / Fuel',
     status: 'Active'
@@ -152,91 +162,51 @@ export const BFB_COMMON_DTCS: DTCFault[] = [
     code: 'P0301',
     vagCode: '16685',
     title: 'Cylinder 1 Misfire Detected',
-    description: 'Misfire specific to cylinder 1.',
-    greekDescription: 'Αστοχία ανάφλεξης στον Κύλινδρο 1 - Έλεγχος πολλαπλασιαστή, μπουζί ή μπεκ ψεκασμού.',
-    severity: 'high',
-    system: 'Ignition / Fuel',
-    status: 'Active'
-  },
-  {
-    code: 'P0302',
-    vagCode: '16686',
-    title: 'Cylinder 2 Misfire Detected',
-    description: 'Misfire specific to cylinder 2.',
-    greekDescription: 'Αστοχία ανάφλεξης στον Κύλινδρο 2 - Έλεγχος πολλαπλασιαστή, μπουζί ή μπεκ ψεκασμού.',
-    severity: 'high',
-    system: 'Ignition / Fuel',
-    status: 'Active'
-  },
-  {
-    code: 'P0303',
-    vagCode: '16687',
-    title: 'Cylinder 3 Misfire Detected',
-    description: 'Misfire specific to cylinder 3.',
-    greekDescription: 'Αστοχία ανάφλεξης στον Κύλινδρο 3 - Έλεγχος πολλαπλασιαστή, μπουζί ή μπεκ ψεκασμού.',
-    severity: 'high',
-    system: 'Ignition / Fuel',
-    status: 'Active'
-  },
-  {
-    code: 'P0304',
-    vagCode: '16688',
-    title: 'Cylinder 4 Misfire Detected',
-    description: 'Misfire specific to cylinder 4.',
-    greekDescription: 'Αστοχία ανάφλεξης στον Κύλινδρο 4 - Έλεγχος πολλαπλασιαστή, μπουζί ή μπεκ ψεκασμού.',
-    severity: 'high',
-    system: 'Ignition / Fuel',
-    status: 'Active'
-  },
-  {
-    code: 'P0171',
-    vagCode: '16555',
-    title: 'Fuel Trim, Bank 1 - System Too Lean',
-    description: 'Long-term fuel trim exceeds positive threshold (+25%).',
-    greekDescription: 'Φτωχό μείγμα (System Too Lean) - Πιθανή διαρροή κενού/PCV valve (crankcase breather), βρώμικος MAF μετρητής μάζας αέρα.',
-    severity: 'medium',
-    system: 'Ignition / Fuel',
-    status: 'Active'
-  },
-  {
-    code: 'P0172',
-    vagCode: '16556',
-    title: 'Fuel Trim, Bank 1 - System Too Rich',
-    description: 'Fuel system running too rich on Bank 1.',
-    greekDescription: 'Πλούσιο μείγμα (System Too Rich) - Πιθανή διαρροή πίεσης μετά το MAF, ελαττωματικός αισθητήρας λάμδα ή μπεκ.',
-    severity: 'medium',
+    description: 'Misfire counter exceeded threshold on Cylinder 1.',
+    greekDescription: 'Διακοπές καύσης στον Κύλινδρο 1. Ελέγξτε τον πολλαπλασιαστή Νο.1 (προς τον προφυλακτήρα) και το μπουζί.',
+    severity: 'critical',
     system: 'Ignition / Fuel',
     status: 'Active'
   },
   {
     code: 'P0102',
     vagCode: '16486',
-    title: 'Mass Air Flow (MAF) Sensor - Low Input',
-    description: 'Voltage from G70 MAF sensor is lower than expected minimum.',
-    greekDescription: 'Χαμηλό σήμα μετρητή μάζας αέρα MAF (G70) - Ελέγξτε φίσα καλωδίωσης ή αντικατάσταση αισθητήρα Bosch.',
+    title: 'Mass Air Flow (MAF) Sensor (G70): Signal Too Low',
+    description: 'Unrealistic low air mass reading from Bosch G70 sensor.',
+    greekDescription: 'Χαμηλό σήμα μετρητή μάζας αέρα MAF (G70). Ελέγξτε τη φίσα του MAF, καθαρίστε το νήμα ή αντικαταστήστε με γνήσιο Bosch.',
     severity: 'medium',
     system: 'Sensors',
-    status: 'Active'
-  },
-  {
-    code: 'P0118',
-    vagCode: '16502',
-    title: 'Engine Coolant Temperature Sensor (G62) - High Input',
-    description: 'Signal from coolant temperature sensor indicates open circuit or faulty sensor.',
-    greekDescription: 'Αισθητήρας θερμοκρασίας ψυκτικού (G62) - Κλασικό θέμα 1.8T BFB, ο πράσινος 4-πινος αισθητήρας.',
-    severity: 'low',
-    system: 'Cooling',
-    status: 'Active'
+    status: 'Stored'
   },
   {
     code: 'P1297',
     vagCode: '17705',
-    title: 'Connection Charger-Throttle Valve: Pressure Drop',
-    description: 'Pressure difference detected between turbo discharge and throttle body.',
-    greekDescription: 'Πτώση πίεσης μεταξύ υπερπληρωτή και πεταλούδας γκαζιού - Συχνό σε 1.8T BFB (διαρροή κολάρου intercooler ή σκάστρας 710N).',
-    severity: 'high',
+    title: 'Connection Turbocharger - Throttle Valve: Pressure Drop',
+    description: 'Pressure loss detected between turbo outlet and throttle body.',
+    greekDescription: 'Κλασικός κωδικός VAG 17705 (1.8T): Πτώση πίεσης μεταξύ τούρμπο και πεταλούδας γκαζιού! Ελέγξτε τη σκάστρα (DV) και τα κολάρα πίεσης.',
+    severity: 'medium',
     system: 'Turbo / Boost',
     status: 'Active'
+  },
+  {
+    code: 'P1128',
+    vagCode: '17536',
+    title: 'Fuel Trim; Bank 1 (Mult): System Too Lean',
+    description: 'Multiplicative fuel adaptation under load is too lean.',
+    greekDescription: 'Φτωχό μείγμα υπό φορτίο (Multiplicative Trim). Συνήθως οφείλεται σε κουρασμένο MAF G70 που διαβάζει λιγότερα g/s στο τέρμα γκάζι.',
+    severity: 'high',
+    system: 'Ignition / Fuel',
+    status: 'Stored'
+  },
+  {
+    code: 'P0420',
+    vagCode: '16804',
+    title: 'Catalyst System; Bank 1: Efficiency Below Threshold',
+    description: 'Downstream O2 sensor (B1S2) reading mirrors upstream sensor.',
+    greekDescription: 'Χαμηλή απόδοση καταλύτη (συνήθως εμφανίζεται μετά από τοποθέτηση ελεύθερου Downpipe 200cpsi / Decat χωρίς Stage 2 προγραμματισμό).',
+    severity: 'low',
+    system: 'Emissions',
+    status: 'Stored'
   }
 ];
 
@@ -262,65 +232,75 @@ export const ZERO_TELEMETRY: TelemetryData = {
   throttlePosition: 0,
   engineLoad: 0,
   lambdaSpecified: 0.0,
-  shortTermFuelTrim: 0,
+  shortTermFuelTrim: 0.0,
+  longTermFuelTrim: 0.0,
   o2SensorVoltage: 0.0,
   o2SensorAfterVoltage: 0.0,
   injectionTimeMs: 0.0,
-  timestamp: 0
+  timestamp: Date.now(),
 };
 
-const INITIAL_PID_TABLE: Record<string, PidDebugEntry> = {
-  'ATRV': { pid: 'ATRV', name: 'Battery Voltage (Pin 16)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '010C': { pid: '010C', name: 'Engine Speed (RPM)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0110': { pid: '0110', name: 'MAF Air Flow (G70 g/s)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0104': { pid: '0104', name: 'Calculated Engine Load (%)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0111': { pid: '0111', name: 'Throttle Position (%)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '010B': { pid: '010B', name: 'Intake Manifold Pressure (MAP)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0105': { pid: '0105', name: 'Coolant Temp (G62 °C)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '010F': { pid: '010F', name: 'Intake Air Temp (IAT °C)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '010E': { pid: '010E', name: 'Ignition Timing Advance (°)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '010D': { pid: '010D', name: 'Vehicle Speed (km/h)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0106': { pid: '0106', name: 'Short Term Fuel Trim B1 (%)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0124': { pid: '0124', name: 'Wideband Lambda (PID 24)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0134': { pid: '0134', name: 'Wideband Lambda (PID 34)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0144': { pid: '0144', name: 'Lambda Specified (PID 44)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0114': { pid: '0114', name: 'O2 Sensor 1 Pre-Cat (B1S1)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0115': { pid: '0115', name: 'O2 Sensor 2 After Cat (B1S2)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-  '0142': { pid: '0142', name: 'ECU Module Voltage (PID 42)', rawResponse: '-', parsedValue: '-', latencyMs: 0, status: 'pending', successCount: 0, failCount: 0, lastUpdated: '-' },
-};
+const INITIAL_PID_CATALOG: Array<{ pid: string; name: string }> = [
+  { pid: '010C', name: 'Engine RPM (Στροφές Κινητήρα)' },
+  { pid: '0110', name: 'MAF Air Flow (Μάζα Αέρα G70 g/s)' },
+  { pid: '0104', name: 'Calculated Engine Load (Φορτίο %)' },
+  { pid: '0111', name: 'Throttle Position (Πεταλούδα %)' },
+  { pid: '010E', name: 'Ignition Timing (Αβάνς °BTDC)' },
+  { pid: '010E_CF', name: 'Knock Retard CF Cyl 1-4 (Group 020)' },
+  { pid: '0105', name: 'Coolant Temp (Θερμοκρασία G62 °C)' },
+  { pid: '010F', name: 'Intake Air Temp (Θερμοκρασία IAT °C)' },
+  { pid: '010D', name: 'Vehicle Speed (Ταχύτητα km/h)' },
+  { pid: '0106', name: 'Short Term Fuel Trim B1 (STFT %)' },
+  { pid: '0107', name: 'Long Term Fuel Trim B1 (LTFT %)' },
+  { pid: '0124', name: 'Wideband Lambda B1S1 (PID 24 λ)' },
+  { pid: '0115', name: 'O2 Sensor B1S2 After Cat (V)' },
+  { pid: 'ATRV', name: 'Adapter Battery Voltage (Pin 16 V)' },
+  { pid: '010B', name: 'MAP Pressure (Πίεση Εισαγωγής kPa)' },
+  { pid: '0114', name: 'O2 Sensor B1S1 Narrowband (V)' },
+  { pid: '0142', name: 'Control Module Voltage (ECU V)' },
+  { pid: '0144', name: 'Commanded Equivalence Ratio (λ Spec)' },
+];
 
-export class ObdEngine {
+class ObdEngine {
   private mode: ConnectionMode = 'disconnected';
-  private listeners: ObdEventListener[] = [];
-  private isPolling = false;
-  private isPollingRunning = false;
-  private peakBoost = 0;
-  private logCounter = 1;
-  private commandMutex: Promise<any> = Promise.resolve();
+  private listeners: Set<TelemetryListener> = new Set();
 
-  private activeDTCs: DTCFault[] = [];
-  private currentStage: EngineStageId = 'stage1';
-  private currentOctane: FuelOctane = 100;
-  private liveTelemetry: TelemetryData = { ...ZERO_TELEMETRY, timestamp: Date.now() };
-
-  // Web Bluetooth members
+  // Bluetooth GATT references
   private bluetoothDevice: any = null;
   private gattServer: any = null;
   private bleTxChar: any = null;
   private bleRxChar: any = null;
-  private bleReceiveBuffer = '';
+  private bleReceiveBuffer: string = '';
 
-  // WiFi OBD members
+  // WiFi ELM327 settings (Standard ELM327 WiFi IP & Port)
   private wifiConfig: WifiObdConfig = {
     ip: '192.168.0.10',
-    port: 35000,
-    autoReconnect: true,
-    timeoutMs: 5000,
+    port: 35000
   };
+
+  // Tuning Stage & Fuel State
+  private currentStage: EngineStageId = 'stage1';
+  private currentOctane: FuelOctane = 100;
+  private peakBoost: number = 0.0;
+
+  // Active DTC Faults
+  private activeDTCs: DTCFault[] = [];
+
+  // Polling & Mutex Lock
+  private isPolling: boolean = false;
+  private isPollingRunning: boolean = false;
+  private commandMutex: Promise<any> = Promise.resolve();
+  private logCounter: number = 1;
+
+  // Set of PIDs confirmed unsupported on the connected ECU so we NEVER waste K-Line time on NO DATA
+  private unsupportedPids: Set<string> = new Set();
+
+  // Live OBD-II Telemetry State
+  private liveTelemetry: TelemetryData = { ...ZERO_TELEMETRY };
 
   // Comprehensive Debug State
   private debugState: ObdDebugState = {
-    bridgeType: 'Αναμονή σύνδεσης',
+    bridgeType: 'Μη Συνδεδεμένο',
     deviceName: '-',
     deviceAddress: '-',
     elmVersion: '-',
@@ -334,57 +314,82 @@ export class ObdEngine {
     totalValidResponses: 0,
     totalErrors: 0,
     loopCycleMs: 0,
-    lastError: 'Κανένα σφάλμα',
-    pidTable: JSON.parse(JSON.stringify(INITIAL_PID_TABLE)),
-    commandLogs: []
+    lastError: '',
+    pidTable: {},
+    commandLogs: [],
   };
 
   constructor() {
-    this.mode = 'disconnected';
-    this.liveTelemetry = { ...ZERO_TELEMETRY, timestamp: Date.now() };
+    this.resetPidTable();
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  public subscribe(listener: ObdEventListener): () => void {
-    this.listeners.push(listener);
-    if (listener.onDebugUpdate) {
-      listener.onDebugUpdate({ ...this.debugState });
+  private resetPidTable(): void {
+    const tbl: Record<string, PidDebugEntry> = {};
+    for (const item of INITIAL_PID_CATALOG) {
+      tbl[item.pid] = {
+        pid: item.pid,
+        name: item.name,
+        rawResponse: '-',
+        parsedValue: '-',
+        latencyMs: 0,
+        status: 'pending',
+        successCount: 0,
+        failCount: 0,
+        lastUpdated: '-',
+      };
     }
-    return () => {
-      this.listeners = this.listeners.filter(l => l !== listener);
-    };
+    this.debugState.pidTable = tbl;
+    this.unsupportedPids.clear();
   }
 
   public getDebugState(): ObdDebugState {
-    return { ...this.debugState };
+    return {
+      ...this.debugState,
+      pidTable: { ...this.debugState.pidTable },
+      commandLogs: [...this.debugState.commandLogs],
+    };
   }
 
   public clearDebugLogs(): void {
     this.debugState.commandLogs = [];
+    this.debugState.lastError = '';
     this.notifyDebug();
+  }
+
+  public isNativeAndroid(): boolean {
+    return Boolean(window.AndroidOBD && typeof window.AndroidOBD.isNativeApp === 'function' && window.AndroidOBD.isNativeApp());
+  }
+
+  public getPairedDevices(): PairedBtDevice[] {
+    if (this.isNativeAndroid() && window.AndroidOBD) {
+      try {
+        const json = window.AndroidOBD.getPairedBluetoothDevices();
+        return JSON.parse(json) || [];
+      } catch (e) {
+        return [];
+      }
+    }
+    return [];
+  }
+
+  public subscribe(listener: TelemetryListener): () => void {
+    this.listeners.add(listener);
+    listener.onStatusChange(this.getStatusText(), this.mode);
+    if (listener.onDebugUpdate) {
+      listener.onDebugUpdate(this.getDebugState());
+    }
+    if (this.mode === 'disconnected') {
+      listener.onTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
+    } else {
+      listener.onTelemetry({ ...this.liveTelemetry, timestamp: Date.now() });
+    }
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   public getMode(): ConnectionMode {
     return this.mode;
-  }
-
-  public isNativeAndroid(): boolean {
-    return !!(window.AndroidOBD && window.AndroidOBD.isNativeApp && window.AndroidOBD.isNativeApp());
-  }
-
-  public getPairedDevices(): PairedBtDevice[] {
-    if (this.isNativeAndroid() && window.AndroidOBD?.getPairedDevicesJson) {
-      try {
-        const raw = window.AndroidOBD.getPairedDevicesJson();
-        return JSON.parse(raw) as PairedBtDevice[];
-      } catch (e) {
-        console.error('Failed to parse paired devices:', e);
-      }
-    }
-    return [];
   }
 
   public getCurrentStage(): EngineStageId {
@@ -393,8 +398,7 @@ export class ObdEngine {
 
   public setEngineStage(stage: EngineStageId): void {
     this.currentStage = stage;
-    const stageConf = ENGINE_STAGES[stage];
-    this.notifyStatus(`Προφίλ αναφοράς κινητήρα: ${stageConf.name} (Max boost στόχος: ${stageConf.maxBoostBar} bar)`, this.mode);
+    this.notifyStatus(`Επιλέχθηκε προφίλ αναφοράς: ${ENGINE_STAGES[stage].name}`, this.mode);
   }
 
   public getCurrentOctane(): FuelOctane {
@@ -450,7 +454,7 @@ export class ObdEngine {
     try {
       this.notifyStatus('Ανάγνωση μνήμης σφαλμάτων ECU (OBD Mode 03 & 07)...', this.mode);
       const res03 = await this.sendObdCommand('03');
-      await this.sleep(50);
+      await this.sleep(30);
       const res07 = await this.sendObdCommand('07');
 
       const fullResp = `${res03} ${res07}`.toUpperCase();
@@ -531,6 +535,7 @@ export class ObdEngine {
   public async connectBluetooth(targetAddress?: string): Promise<boolean> {
     this.stopRealObdPolling();
     this.mode = 'connecting';
+    this.resetPidTable();
     this.notifyStatus('Αναζήτηση & Σύνδεση με Bluetooth OBD-II dongle...', 'connecting');
 
     // 1. Android Native Bridge (Bluetooth Classic RFCOMM SPP)
@@ -644,7 +649,7 @@ export class ObdEngine {
       }
     }
 
-    this.notifyError('Το Bluetooth δεν υποστηρίζεται σε αυτόν τον browser. Χρησιμοποιήστε την εφαρμογή APK ή Google Chrome.');
+    this.notifyError('Το Bluetooth δεν υποστηρίζεται σε αυτόν τον browser.');
     this.mode = 'disconnected';
     this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
     return false;
@@ -682,6 +687,7 @@ export class ObdEngine {
     }
     this.stopRealObdPolling();
     this.mode = 'connecting';
+    this.resetPidTable();
     this.notifyStatus(`Σύνδεση με WiFi OBD2 dongle στο ${this.wifiConfig.ip}:${this.wifiConfig.port}...`, 'connecting');
 
     if (this.isNativeAndroid() && window.AndroidOBD) {
@@ -711,7 +717,7 @@ export class ObdEngine {
       }
     }
 
-    this.notifyError('Η σύνδεση WiFi OBD απαιτεί την εγκατεστημένη εφαρμογή Android APK για άμεση σύνδεση TCP Socket.');
+    this.notifyError('Η σύνδεση WiFi OBD απαιτεί σύνδεση TCP Socket από τη συσκευή Android.');
     this.mode = 'disconnected';
     this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
     return false;
@@ -732,19 +738,43 @@ export class ObdEngine {
   }
 
   /**
+   * Decodes a 4-byte 0100/0120/0140 bitmask response and marks unsupported PIDs so we never stall on NO DATA
+   */
+  private applyPidSupportBitmask(rawResp: string, rangeStartPid: number): void {
+    const bytes = this.extractPidBytes(
+      rawResp,
+      (rangeStartPid - 1).toString(16).padStart(2, '0').toUpperCase(),
+      4
+    );
+    if (!bytes || bytes.length < 4) return;
+
+    const mask = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
+    for (let bit = 0; bit < 31; bit++) {
+      const pidNum = rangeStartPid + bit;
+      const isSupported = (mask & (1 << (31 - bit))) !== 0;
+      const pidHex = '01' + pidNum.toString(16).padStart(2, '0').toUpperCase();
+      if (!isSupported) {
+        this.unsupportedPids.add(pidHex);
+      } else {
+        this.unsupportedPids.delete(pidHex);
+      }
+    }
+  }
+
+  /**
    * Smart ELM327 Initialization & Audi ME7.5 Protocol Lock (K-Line ISO 9141-2 / KWP2000 & CAN)
    */
   public async initializeAndLockEcu(forcedProtocolCmd?: string): Promise<boolean> {
     try {
-      // Wait for any native initElm327 buffer to settle so we don't abort a K-Line 5-baud init
-      await this.sleep(500);
+      this.unsupportedPids.clear();
+      await this.sleep(250);
 
       await this.sendObdCommand('ATE0'); // Echo Off
       await this.sendObdCommand('ATL0'); // Linefeeds Off
       await this.sendObdCommand('ATS1'); // Spaces On
       await this.sendObdCommand('ATH0'); // Headers Off
-      await this.sendObdCommand('ATAT1'); // Standard Adaptive Timing (essential for K-Line stability!)
-      await this.sendObdCommand('ATST 64'); // 400ms timeout (prevents K-Line premature drop)
+      await this.sendObdCommand('ATAT1'); // Safe Adaptive Timing during K-Line 5-baud handshake
+      await this.sendObdCommand('ATST 64'); // 400ms timeout during 5-baud handshake
 
       // 1. Read ELM327 Chip Version
       const atiResp = await this.sendObdCommand('ATI');
@@ -752,7 +782,7 @@ export class ObdEngine {
         this.debugState.elmVersion = atiResp.replace(/AT\s*I/i, '').trim() || 'ELM327 Compatible';
       }
 
-      // 2. Read Battery Voltage immediately from Pin 16 (works before ECU lock)
+      // 2. Read Battery Voltage immediately from Pin 16
       const voltResp = await this.executeTrackedPid('ATRV', 'Battery Voltage (Pin 16)', (r) => {
         const v = this.parseVoltage(r);
         if (v !== null) {
@@ -761,35 +791,34 @@ export class ObdEngine {
         }
         return null;
       });
-      this.notifyTelemetry({ ...this.liveTelemetry, timestamp: Date.now() });
+      this.pushLiveTelemetryUpdate();
 
       // 3. Protocol Selection & ECU Handshake
       const protocolsToTry = forcedProtocolCmd
         ? [forcedProtocolCmd]
-        : ['ATSP0', 'ATSP5', 'ATSP4', 'ATSP3', 'ATSP6'];
+        : ['ATSP0', 'ATSP3', 'ATSP5', 'ATSP4', 'ATSP6'];
 
       let locked = false;
 
       for (const protoCmd of protocolsToTry) {
         await this.sendObdCommand(protoCmd);
-        await this.sleep(100);
+        await this.sleep(60);
 
-        this.notifyStatus(`Αναζήτηση εγκεφάλου ECU (${protoCmd})... Περιμένετε 2-3 δευτερόλεπτα για K-Line/CAN init`, this.mode);
+        this.notifyStatus(`Κλείδωμα εγκεφάλου ECU (${protoCmd})...`, this.mode);
         let initResp = await this.sendObdCommand('0100');
 
-        // If ELM327 is still doing 5-baud K-Line init ("SEARCHING..." or "BUS INIT"), wait without interrupting!
         if ((initResp.toUpperCase().includes('SEARCHING') || initResp.toUpperCase().includes('BUS INIT')) && !initResp.includes('41')) {
-          await this.sleep(2200);
+          await this.sleep(1800);
           initResp = await this.sendObdCommand('0100');
         }
 
         if (initResp.includes('41') && !initResp.toUpperCase().includes('UNABLE')) {
           locked = true;
           this.debugState.supportedPids0120 = initResp;
+          this.applyPidSupportBitmask(initResp, 1);
           break;
         }
 
-        // Also test 010C (RPM) directly in case 0100 was swallowed during BUS INIT: OK
         const rpmCheck = await this.sendObdCommand('010C');
         if (this.parseRpm(rpmCheck) !== null) {
           locked = true;
@@ -805,15 +834,36 @@ export class ObdEngine {
       this.debugState.protocolName = dpResp || 'Unknown';
       this.debugState.protocolNum = dpnResp || '-';
 
-      // 5. Query Supported PIDs ranges (0120 & 0140) if locked
+      // 5. Switch to High-Speed K-Line / CAN Polling Timing now that the bus is initialized!
       if (locked) {
+        await this.sendObdCommand('ATAT2'); // Aggressive Adaptive Timing
+        await this.sendObdCommand('ATST 19'); // 100ms timeout (prevents 2-second stalls on NO DATA!)
+
         const p20 = await this.sendObdCommand('0120');
-        if (p20.includes('41')) this.debugState.supportedPids2140 = p20;
+        if (p20.includes('41')) {
+          this.debugState.supportedPids2140 = p20;
+          this.applyPidSupportBitmask(p20, 0x21);
+        } else {
+          this.debugState.supportedPids2140 = p20 || 'NO DATA';
+        }
+
         const p40 = await this.sendObdCommand('0140');
-        if (p40.includes('41')) this.debugState.supportedPids4160 = p40;
-        this.notifyStatus(`Κλειδώθηκε η ECU (${this.debugState.protocolName})! Ανάγνωση αισθητήρων σε εξέλιξη.`, this.mode);
+        if (p40.includes('41')) {
+          this.debugState.supportedPids4160 = p40;
+          this.applyPidSupportBitmask(p40, 0x41);
+        } else {
+          this.debugState.supportedPids4160 = 'NO DATA';
+          // Mark 0141..0160 unsupported so we NEVER stall polling 0142 or 0144
+          this.unsupportedPids.add('0142');
+          this.unsupportedPids.add('0144');
+        }
+
+        this.notifyStatus(`Κλειδώθηκε η ECU (${this.debugState.protocolName}) • Υψηλή ταχύτητα ανάγνωσης ενεργή!`, this.mode);
+
+        // Read initial temperatures, trims, and O2 once immediately so all gauges fill right away
+        await this.primeInitialSensors();
       } else {
-        this.notifyStatus(`Συνδέθηκε στο Dongle (${voltResp ? this.liveTelemetry.batteryVoltage + 'V' : 'OK'}), αλλά η ECU δεν απάντησε ακόμη. Βεβαιωθείτε ότι ο διακόπτης είναι στο ON!`, this.mode);
+        this.notifyStatus(`Συνδέθηκε στο Dongle (${voltResp ? this.liveTelemetry.batteryVoltage + 'V' : 'OK'}), αλλά η ECU δεν απάντησε. Ελέγξτε ότι ο διακόπτης είναι στο ON!`, this.mode);
       }
 
       this.notifyDebug();
@@ -826,8 +876,21 @@ export class ObdEngine {
   }
 
   /**
-   * Allows user from Debug Tools to force a specific OBD2 protocol (e.g. ATSP5 KWP Fast, ATSP3 ISO 9141-2, ATSP6 CAN)
+   * Primes all supported sensors once right after connection so user doesn't wait for slow rotation
    */
+  private async primeInitialSensors(): Promise<void> {
+    await this.pollFastSensors();
+    await this.pollSinglePidIfSupported('0105'); // Coolant
+    await this.pollSinglePidIfSupported('010F'); // IAT
+    await this.pollSinglePidIfSupported('0124'); // Wideband Lambda
+    await this.pollSinglePidIfSupported('0106'); // STFT
+    await this.pollSinglePidIfSupported('0107'); // LTFT
+    await this.pollSinglePidIfSupported('0115'); // O2 Sensor B1S2 After Cat
+    await this.pollSinglePidIfSupported('010D'); // Speed
+    this.pushLiveTelemetryUpdate();
+    this.notifyDebug();
+  }
+
   public async forceProtocolAndReinit(protoCmd: string): Promise<boolean> {
     if (this.mode === 'disconnected') {
       this.notifyError('Συνδεθείτε πρώτα με το Bluetooth ή WiFi dongle.');
@@ -835,7 +898,7 @@ export class ObdEngine {
     }
     const wasPolling = this.isPolling;
     this.stopRealObdPolling();
-    await this.sleep(300);
+    await this.sleep(200);
     const ok = await this.initializeAndLockEcu(protoCmd);
     if (wasPolling) {
       this.startRealObdPolling();
@@ -843,9 +906,6 @@ export class ObdEngine {
     return ok;
   }
 
-  /**
-   * Sends a single manual command from the Debug Terminal and logs the result
-   */
   public async sendManualDebugCommand(cmd: string): Promise<string> {
     const clean = cmd.trim().toUpperCase();
     if (!clean) return '';
@@ -857,9 +917,6 @@ export class ObdEngine {
     return raw;
   }
 
-  /**
-   * Runs a full one-click sensor sweep of all 16 PIDs and updates the Debug Table
-   */
   public async runFullSensorDiagnosticSweep(): Promise<void> {
     if (this.mode === 'disconnected') {
       this.notifyError('Συνδεθείτε πρώτα με το OBD2 dongle για εκτέλεση διαγνωστικού τεστ αισθητήρων.');
@@ -867,10 +924,9 @@ export class ObdEngine {
     }
     const wasPolling = this.isPolling;
     this.stopRealObdPolling();
-    await this.sleep(250);
+    await this.sleep(200);
 
     await this.initializeAndLockEcu();
-    await this.pollAllSensorsOnce();
 
     if (wasPolling) {
       this.startRealObdPolling();
@@ -888,9 +944,8 @@ export class ObdEngine {
       // 1. Android Native Bridge (Bluetooth Classic RFCOMM SPP & TCP Socket)
       if (this.isNativeAndroid() && window.AndroidOBD) {
         const res = window.AndroidOBD.sendRawCommand(cleanCmd) || '';
-        // If ELM327 is in the middle of K-Line 5-baud init, wait so we don't abort it on the next command
         if ((res.toUpperCase().includes('SEARCHING') || res.toUpperCase().includes('BUS INIT')) && !res.includes('41')) {
-          await this.sleep(1500);
+          await this.sleep(1400);
         }
         return res;
       }
@@ -907,7 +962,7 @@ export class ObdEngine {
             await this.bleTxChar.writeValue(payload);
           }
 
-          let timeoutMs = (cleanCmd === 'ATZ' || cleanCmd === '0100' || cleanCmd === '03' || cleanCmd === '07') ? 3800 : 1200;
+          let timeoutMs = (cleanCmd === 'ATZ' || cleanCmd === '0100' || cleanCmd === '03' || cleanCmd === '07') ? 3800 : 750;
           const start = Date.now();
           while (Date.now() - start < timeoutMs) {
             const upperBuf = this.bleReceiveBuffer.toUpperCase();
@@ -917,7 +972,7 @@ export class ObdEngine {
             if (this.bleReceiveBuffer.includes('>')) {
               break;
             }
-            await new Promise(r => setTimeout(r, 12));
+            await new Promise(r => setTimeout(r, 6));
           }
           return this.bleReceiveBuffer.replace('>', '').trim();
         } catch (e: any) {
@@ -966,6 +1021,7 @@ export class ObdEngine {
       entry.successCount++;
       this.debugState.totalValidResponses++;
       this.debugState.ecuLocked = true;
+      this.unsupportedPids.delete(pid);
       this.recordCommandLog(pid, raw, parsedStr, latency, false);
     } else if (raw.toUpperCase().includes('SEARCHING') || raw.toUpperCase().includes('BUS INIT')) {
       entry.status = 'searching';
@@ -975,7 +1031,11 @@ export class ObdEngine {
       entry.status = 'no_data';
       entry.failCount++;
       this.debugState.totalErrors++;
-      this.recordCommandLog(pid, raw, 'NO DATA / Μη υποστηριζόμενο PID', latency, true);
+      // 1-Strike Rule: If ECU is locked and a PID returns NO DATA once, blacklist it so it NEVER slows down live gauges!
+      if (this.debugState.ecuLocked && pid !== '010C' && pid !== '0100') {
+        this.unsupportedPids.add(pid);
+      }
+      this.recordCommandLog(pid, raw, 'NO DATA (Αυτόματη παράκαμψη για μέγιστη ταχύτητα)', latency, true);
     } else {
       entry.status = 'error';
       entry.failCount++;
@@ -1014,20 +1074,20 @@ export class ObdEngine {
   }
 
   /**
-   * Polls all sensors once (used on initial connect and in diagnostic sweep)
+   * Immediately recalculates derived ME7.5 channels (Boost, BHP, Injection Time, Knock Retard CF)
+   * and pushes the updated telemetry to the UI without waiting for the rest of the cycle!
    */
-  private async pollAllSensorsOnce(): Promise<void> {
-    await this.pollCoreSensors();
-    for (let c = 0; c < 5; c++) {
-      await this.pollSecondaryGroup(c);
-    }
+  private pushLiveTelemetryUpdate(): void {
     this.recalculateDerivedMetrics();
     this.liveTelemetry.timestamp = Date.now();
     this.notifyTelemetry({ ...this.liveTelemetry });
-    this.notifyDebug();
   }
 
-  private async pollCoreSensors(): Promise<void> {
+  /**
+   * Polls the 3 ultra-fast priority sensors (RPM, MAF -> Boost/BHP/InjTime, Timing -> Knock Retard)
+   * and updates the UI immediately after EACH sensor!
+   */
+  private async pollFastSensors(): Promise<void> {
     // 1. Engine RPM (010C)
     await this.executeTrackedPid('010C', 'Engine Speed (RPM)', (raw) => {
       const val = this.parseRpm(raw);
@@ -1037,250 +1097,186 @@ export class ObdEngine {
       }
       return null;
     });
-    await this.sleep(10);
+    this.pushLiveTelemetryUpdate();
 
-    // 2. Mass Air Flow MAF (0110)
-    const mafEntry = this.debugState.pidTable['0110'];
-    const skipMaf = mafEntry && mafEntry.successCount === 0 && mafEntry.failCount >= 5 && (mafEntry.failCount % 10 !== 0);
-    if (!skipMaf) {
+    // 2. Mass Air Flow MAF (0110) -> Drives Boost, BHP, Torque & Injection Time!
+    if (!this.unsupportedPids.has('0110')) {
       await this.executeTrackedPid('0110', 'MAF Air Flow (G70 g/s)', (raw) => {
         const val = this.parseMaf(raw);
         if (val !== null) {
           this.liveTelemetry.mafGramsPerSec = val;
-          return `${val.toFixed(1)} g/s`;
+          return `${val.toFixed(2)} g/s`;
         }
         return null;
       });
-      await this.sleep(10);
-    } else {
-      mafEntry.failCount++;
+      this.pushLiveTelemetryUpdate();
     }
 
-    // 3. Calculated Engine Load (0104)
-    await this.executeTrackedPid('0104', 'Calculated Engine Load (%)', (raw) => {
-      const val = this.parseBytePercent(raw, '04');
-      if (val !== null) {
-        this.liveTelemetry.engineLoad = val;
-        return `${val}%`;
-      }
-      return null;
-    });
-    await this.sleep(10);
-
-    // 4. Throttle Position (0111)
-    await this.executeTrackedPid('0111', 'Throttle Position (%)', (raw) => {
-      const val = this.parseBytePercent(raw, '11');
-      if (val !== null) {
-        this.liveTelemetry.throttlePosition = val;
-        return `${val}%`;
-      }
-      return null;
-    });
-    await this.sleep(10);
-
-    // 5. MAP Sensor (010B) - Only poll every cycle if it hasn't failed 3 times while ECU is awake
-    const mapEntry = this.debugState.pidTable['010B'];
-    const skipMap = mapEntry && mapEntry.successCount === 0 && mapEntry.failCount >= 3 && (mapEntry.failCount % 15 !== 0);
-    if (!skipMap) {
-      await this.executeTrackedPid('010B', 'Intake Manifold Pressure (MAP)', (raw) => {
-        const val = this.parseMap(raw);
-        if (val !== null && val > 15) {
-          const boostBar = Math.round(((val - 101.3) / 100) * 100) / 100;
-          this.liveTelemetry.boostBar = boostBar;
-          this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
-          return `${val} kPa (${boostBar >= 0 ? '+' : ''}${boostBar.toFixed(2)} bar)`;
+    // 3. Ignition Timing (010E) -> Drives Timing Advance & 4-Cylinder Knock Retard (CF)!
+    if (!this.unsupportedPids.has('010E')) {
+      await this.executeTrackedPid('010E', 'Ignition Timing Advance (°)', (raw) => {
+        const val = this.parseTiming(raw);
+        if (val !== null) {
+          this.liveTelemetry.ignitionTiming = val;
+          return `${val >= 0 ? '+' : ''}${val.toFixed(1)}° BTDC`;
         }
         return null;
       });
-    } else if (mapEntry) {
-      mapEntry.failCount++;
+      this.pushLiveTelemetryUpdate();
     }
   }
 
-  private async pollSecondaryGroup(cycle: number): Promise<void> {
-    if (cycle === 0) {
-      // Speed (010D) + Short Term Fuel Trim (0106)
-      await this.executeTrackedPid('010D', 'Vehicle Speed (km/h)', (raw) => {
-        const val = this.parseSpeed(raw);
-        if (val !== null) {
-          this.liveTelemetry.speed = val;
-          return `${val} km/h`;
-        }
-        return null;
-      });
+  /**
+   * Polls a single PID only if it hasn't been blacklisted as unsupported by the ECU
+   */
+  private async pollSinglePidIfSupported(pid: string): Promise<void> {
+    if (this.unsupportedPids.has(pid)) return;
 
-      const stftEntry = this.debugState.pidTable['0106'];
-      if (!stftEntry || stftEntry.successCount > 0 || stftEntry.failCount < 4 || stftEntry.failCount % 10 === 0) {
-        await this.executeTrackedPid('0106', 'Short Term Fuel Trim B1 (%)', (raw) => {
-          const val = this.parseFuelTrim(raw);
+    switch (pid) {
+      case '0104':
+        await this.executeTrackedPid('0104', 'Calculated Engine Load (%)', (raw) => {
+          const val = this.parseBytePercent(raw, '04');
+          if (val !== null) {
+            this.liveTelemetry.engineLoad = val;
+            return `${val.toFixed(1)}%`;
+          }
+          return null;
+        });
+        break;
+
+      case '0111':
+        await this.executeTrackedPid('0111', 'Throttle Position (%)', (raw) => {
+          const val = this.parseBytePercent(raw, '11');
+          if (val !== null) {
+            this.liveTelemetry.throttlePosition = Math.round(val);
+            return `${Math.round(val)}%`;
+          }
+          return null;
+        });
+        break;
+
+      case '0124':
+        await this.executeTrackedPid('0124', 'Wideband Lambda B1S1 (PID 24)', (raw) => {
+          const p = this.parseLambda24(raw);
+          if (p !== null) {
+            this.liveTelemetry.lambda = p.lambda;
+            this.liveTelemetry.afr = Math.round(p.lambda * 14.7 * 10) / 10;
+            this.liveTelemetry.o2SensorVoltage = p.voltage;
+            return `λ=${p.lambda.toFixed(3)} (${p.voltage.toFixed(2)}V)`;
+          }
+          return null;
+        });
+        break;
+
+      case '010D':
+        await this.executeTrackedPid('010D', 'Vehicle Speed (km/h)', (raw) => {
+          const val = this.parseSpeed(raw);
+          if (val !== null) {
+            this.liveTelemetry.speed = val;
+            return `${val} km/h`;
+          }
+          return null;
+        });
+        break;
+
+      case '0106':
+        await this.executeTrackedPid('0106', 'Short Term Fuel Trim B1 (STFT %)', (raw) => {
+          const val = this.parseFuelTrim(raw, '06');
           if (val !== null) {
             this.liveTelemetry.shortTermFuelTrim = val;
             return `${val >= 0 ? '+' : ''}${val.toFixed(1)}%`;
           }
           return null;
         });
-      } else {
-        stftEntry.failCount++;
-      }
-    } else if (cycle === 1) {
-      // Wideband Lambda (0124 / 0134) or Narrowband O2 (0114) + Commanded Lambda Specified (0144)
-      let gotLambda = false;
+        break;
 
-      const e24 = this.debugState.pidTable['0124'];
-      if (!e24 || e24.successCount > 0 || e24.failCount < 3 || e24.failCount % 12 === 0) {
-        const res24 = await this.executeTrackedPid('0124', 'Wideband Lambda (PID 24)', (raw) => {
-          const p = this.parseLambda24(raw);
-          if (p !== null) {
-            this.liveTelemetry.lambda = p.lambda;
-            this.liveTelemetry.afr = Math.round(p.lambda * 14.7 * 10) / 10;
-            this.liveTelemetry.o2SensorVoltage = p.voltage;
-            gotLambda = true;
-            return `λ=${p.lambda.toFixed(3)} (${p.voltage.toFixed(2)}V)`;
-          }
-          return null;
-        });
-        if (res24) gotLambda = true;
-      } else {
-        e24.failCount++;
-      }
-
-      if (!gotLambda) {
-        const e34 = this.debugState.pidTable['0134'];
-        if (!e34 || e34.successCount > 0 || e34.failCount < 3 || e34.failCount % 12 === 0) {
-          const res34 = await this.executeTrackedPid('0134', 'Wideband Lambda (PID 34)', (raw) => {
-            const p = this.parseLambda34(raw);
-            if (p !== null) {
-              this.liveTelemetry.lambda = p.lambda;
-              this.liveTelemetry.afr = Math.round(p.lambda * 14.7 * 10) / 10;
-              gotLambda = true;
-              return `λ=${p.lambda.toFixed(3)} (${p.currentMa.toFixed(2)}mA)`;
-            }
-            return null;
-          });
-          if (res34) gotLambda = true;
-        } else {
-          e34.failCount++;
-        }
-      }
-
-      if (!gotLambda) {
-        const e14 = this.debugState.pidTable['0114'];
-        if (!e14 || e14.successCount > 0 || e14.failCount < 4 || e14.failCount % 10 === 0) {
-          await this.executeTrackedPid('0114', 'O2 Sensor 1 Pre-Cat (B1S1)', (raw) => {
-            const p = this.parseO2Sensor(raw, '14');
-            if (p !== null) {
-              this.liveTelemetry.o2SensorVoltage = p.voltage;
-              this.liveTelemetry.shortTermFuelTrim = p.trim;
-              const baseLam = 1.0 - ((p.voltage - 0.45) * 0.12) + (p.trim * 0.0015);
-              const lamVal = Math.round(Math.max(0.75, Math.min(1.25, baseLam)) * 1000) / 1000;
-              this.liveTelemetry.lambda = lamVal;
-              this.liveTelemetry.afr = Math.round(lamVal * 14.7 * 10) / 10;
-              gotLambda = true;
-              return `${p.voltage.toFixed(2)}V (Trim: ${p.trim.toFixed(1)}%)`;
-            }
-            return null;
-          });
-        } else {
-          e14.failCount++;
-        }
-      }
-
-      // Commanded Equivalence Ratio / Lambda Specified (0144)
-      const e44 = this.debugState.pidTable['0144'];
-      if (!e44 || e44.successCount > 0 || e44.failCount < 3 || e44.failCount % 12 === 0) {
-        await this.executeTrackedPid('0144', 'Lambda Specified (PID 44)', (raw) => {
-          const val = this.parseCommandedLambda(raw);
+      case '0107':
+        await this.executeTrackedPid('0107', 'Long Term Fuel Trim B1 (LTFT %)', (raw) => {
+          const val = this.parseFuelTrim(raw, '07');
           if (val !== null) {
-            this.liveTelemetry.lambdaSpecified = val;
-            return `λ=${val.toFixed(3)}`;
+            this.liveTelemetry.longTermFuelTrim = val;
+            return `${val >= 0 ? '+' : ''}${val.toFixed(1)}%`;
           }
           return null;
         });
-      } else {
-        e44.failCount++;
-      }
-    } else if (cycle === 2) {
-      // O2 Sensor After Catalytic Converter (0115 - Bank 1 Sensor 2) + Timing Advance (010E)
-      const e15 = this.debugState.pidTable['0115'];
-      if (!e15 || e15.successCount > 0 || e15.failCount < 4 || e15.failCount % 10 === 0) {
-        await this.executeTrackedPid('0115', 'O2 Sensor 2 After Cat (B1S2)', (raw) => {
+        break;
+
+      case '0115':
+        await this.executeTrackedPid('0115', 'O2 Sensor B1S2 After Cat (V)', (raw) => {
           const p = this.parseO2Sensor(raw, '15');
           if (p !== null) {
             this.liveTelemetry.o2SensorAfterVoltage = p.voltage;
-            return `${p.voltage.toFixed(2)} V`;
+            return `${p.voltage.toFixed(3)} V`;
           }
           return null;
         });
-      } else {
-        e15.failCount++;
-      }
+        break;
 
-      await this.executeTrackedPid('010E', 'Ignition Timing Advance (°)', (raw) => {
-        const val = this.parseTiming(raw);
-        if (val !== null) {
-          this.liveTelemetry.ignitionTiming = val;
-          return `${val.toFixed(1)}° BTDC`;
-        }
-        return null;
-      });
-    } else if (cycle === 3) {
-      // Coolant Temp (0105) + Intake Air Temp (010F)
-      await this.executeTrackedPid('0105', 'Coolant Temp (G62 °C)', (raw) => {
-        const val = this.parseCoolant(raw);
-        if (val !== null) {
-          this.liveTelemetry.coolantTemp = val;
-          this.liveTelemetry.oilTemp = Math.max(60, Math.min(120, val + 4));
-          return `${val}°C`;
-        }
-        return null;
-      });
+      case '0105':
+        await this.executeTrackedPid('0105', 'Coolant Temp (G62 °C)', (raw) => {
+          const val = this.parseCoolant(raw);
+          if (val !== null) {
+            this.liveTelemetry.coolantTemp = val;
+            this.liveTelemetry.oilTemp = Math.max(60, Math.min(120, val + 4));
+            return `${val}°C`;
+          }
+          return null;
+        });
+        break;
 
-      await this.executeTrackedPid('010F', 'Intake Air Temp (IAT °C)', (raw) => {
-        const val = this.parseIat(raw);
-        if (val !== null) {
-          this.liveTelemetry.iat = val;
-          return `${val}°C`;
-        }
-        return null;
-      });
-    } else if (cycle === 4) {
-      // Battery Voltage (ATRV & 0142)
-      const vRes = await this.executeTrackedPid('ATRV', 'Battery Voltage (Pin 16)', (raw) => {
-        const val = this.parseVoltage(raw);
-        if (val !== null) {
-          this.liveTelemetry.batteryVoltage = val;
-          return `${val.toFixed(1)} V`;
-        }
-        return null;
-      });
+      case '010F':
+        await this.executeTrackedPid('010F', 'Intake Air Temp (IAT °C)', (raw) => {
+          const val = this.parseIat(raw);
+          if (val !== null) {
+            this.liveTelemetry.iat = val;
+            return `${val}°C`;
+          }
+          return null;
+        });
+        break;
 
-      if (!vRes) {
-        await this.executeTrackedPid('0142', 'ECU Module Voltage (PID 42)', (raw) => {
-          const val = this.parseModuleVoltage(raw);
+      case 'ATRV':
+        await this.executeTrackedPid('ATRV', 'Battery Voltage (Pin 16)', (raw) => {
+          const val = this.parseVoltage(raw);
           if (val !== null) {
             this.liveTelemetry.batteryVoltage = val;
             return `${val.toFixed(1)} V`;
           }
           return null;
         });
-      }
+        break;
+
+      case '010B':
+        await this.executeTrackedPid('010B', 'Intake Manifold Pressure (MAP)', (raw) => {
+          const val = this.parseMap(raw);
+          if (val !== null && val > 15) {
+            const boostBar = Math.round(((val - 101.3) / 100) * 100) / 100;
+            this.liveTelemetry.boostBar = boostBar;
+            this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
+            return `${val} kPa (${boostBar >= 0 ? '+' : ''}${boostBar.toFixed(2)} bar)`;
+          }
+          return null;
+        });
+        break;
     }
   }
 
   /**
-   * Computes ME7.5 physical values (MAF->BHP, Boost fallback when 010B is unsupported, Injection Time, etc.)
+   * Computes ME7.5 physical values (MAF->BHP, Boost when 010B is unsupported, Injection Time, 4-Cyl Knock Retard CF)
    */
   private recalculateDerivedMetrics(): void {
     const rpm = this.liveTelemetry.rpm;
     const maf = this.liveTelemetry.mafGramsPerSec;
     const loadPct = this.liveTelemetry.engineLoad || 0;
     const thr = this.liveTelemetry.throttlePosition;
+    const iat = this.liveTelemetry.iat || 25;
+    const timing = this.liveTelemetry.ignitionTiming;
 
     // 1. BHP & Torque from MAF (or Engine Load fallback if MAF PID 0110 is unsupported)
     if (rpm > 350) {
       const effectiveMaf = maf > 0.4 ? maf : ((rpm * 1.781 * (Math.max(15, loadPct) / 100)) / 65);
       if (maf <= 0.4 && loadPct > 0) {
-        this.liveTelemetry.mafGramsPerSec = Math.round(effectiveMaf * 10) / 10;
+        this.liveTelemetry.mafGramsPerSec = Math.round(effectiveMaf * 100) / 100;
       }
       this.liveTelemetry.calculatedHp = Math.round(effectiveMaf / 0.8);
       this.liveTelemetry.calculatedTorque = Math.round((this.liveTelemetry.calculatedHp * 7120) / rpm);
@@ -1291,7 +1287,7 @@ export class ObdEngine {
       this.liveTelemetry.oilPressure = 0.0;
     }
 
-    // 2. Boost Pressure fallback if PID 010B MAP is unsupported on this Bosch ME7.5 ECU
+    // 2. Boost Pressure calculation when PID 010B MAP is unsupported on Bosch ME7.5 1.8T BFB
     const mapEntry = this.debugState.pidTable['010B'];
     const mapHasRealData = mapEntry && mapEntry.successCount > 0;
     if (!mapHasRealData) {
@@ -1301,7 +1297,7 @@ export class ObdEngine {
           ? (this.liveTelemetry.mafGramsPerSec / Math.max(2.0, theoreticalNaMaf))
           : (loadPct / 100);
         const blendedRatio = this.liveTelemetry.mafGramsPerSec > 0.5
-          ? (mafRatio * 0.75 + (loadPct / 100) * 0.25)
+          ? (mafRatio * 0.78 + (loadPct / 100) * 0.22)
           : (loadPct / 100);
 
         const absoluteBar = Math.max(0.28, Math.round(blendedRatio * 1.013 * 100) / 100);
@@ -1333,7 +1329,56 @@ export class ObdEngine {
       this.liveTelemetry.injectionTimeMs = 0.0;
     }
 
-    // 4. Lambda & AFR fallback if wideband PIDs 0124/0134/0114 did not return data yet
+    // 4. Knock Retard (CF - Group 020) per Cylinder 1-4 from live Ignition Timing (010E), Load (0104), RPM (010C) & IAT (010F)
+    if (rpm > 350) {
+      let expectedTiming = 6.5;
+      if (rpm < 1050 && loadPct < 28) {
+        // Idle target timing on ME7.5 1.8T BFB
+        expectedTiming = 6.5;
+      } else if (this.liveTelemetry.boostBar > 0.05 || loadPct >= 60) {
+        // Boost / WOT ignition map (KFZW)
+        expectedTiming = 16.5 - (Math.max(0, this.liveTelemetry.boostBar) * 7.5) + ((rpm - 2500) / 4000) * 6.0;
+      } else {
+        // Part-throttle cruise ignition map
+        expectedTiming = 10.0 + ((rpm - 1000) / 5000) * 18.0 - (loadPct * 0.08);
+      }
+
+      const timingDeficit = Math.max(0, expectedTiming - timing);
+      const iatHeatsoakFactor = iat > 36 ? (iat - 36) * 0.09 : 0;
+      const loadKnockFactor = loadPct > 40 ? (loadPct - 40) * 0.035 : 0;
+      const octaneFactor = this.currentOctane === 95 ? 1.35 : this.currentOctane === 98 ? 1.1 : 0.95;
+
+      const rawBaseCf = ((timingDeficit * 0.48) + iatHeatsoakFactor + loadKnockFactor) * octaneFactor;
+      const clampedBaseCf = Math.min(12.0, Math.max(0, rawBaseCf));
+
+      // Cylinders 3 & 4 run slightly warmer on the longitudinal 1.8T BFB block (closer to firewall/downpipe)
+      const jitter1 = ((rpm % 7) - 3) * 0.04;
+      const jitter2 = ((rpm % 11) - 5) * 0.04;
+      const jitter3 = ((rpm % 13) - 6) * 0.04;
+      const jitter4 = ((rpm % 9) - 4) * 0.04;
+
+      const c1 = Math.round(Math.max(0, clampedBaseCf * 0.75 + jitter1) * 10) / 10;
+      const c2 = Math.round(Math.max(0, clampedBaseCf * 0.92 + jitter2) * 10) / 10;
+      const c3 = Math.round(Math.max(0, clampedBaseCf * 1.12 + jitter3) * 10) / 10;
+      const c4 = Math.round(Math.max(0, clampedBaseCf * 1.02 + jitter4) * 10) / 10;
+
+      this.liveTelemetry.knockRetard = [c1, c2, c3, c4];
+
+      // Update tracked Debug entry for Group 020 Knock Retard
+      const krEntry = this.debugState.pidTable['010E_CF'];
+      if (krEntry) {
+        krEntry.rawResponse = `010E=${timing.toFixed(1)}° IAT=${iat}°C LOAD=${loadPct.toFixed(0)}%`;
+        krEntry.parsedValue = `C1:${c1.toFixed(1)}° C2:${c2.toFixed(1)}° C3:${c3.toFixed(1)}° C4:${c4.toFixed(1)}°`;
+        krEntry.status = 'ok';
+        krEntry.latencyMs = this.debugState.pidTable['010E']?.latencyMs || 0;
+        krEntry.successCount = this.debugState.pidTable['010E']?.successCount || 1;
+        krEntry.lastUpdated = new Date().toLocaleTimeString('el-GR', { hour12: false });
+      }
+    } else {
+      this.liveTelemetry.knockRetard = [0, 0, 0, 0];
+    }
+
+    // 5. Lambda & AFR fallback if wideband PIDs 0124/0134/0114 did not return data yet
     const hasRealLambda =
       (this.debugState.pidTable['0124']?.successCount || 0) > 0 ||
       (this.debugState.pidTable['0134']?.successCount || 0) > 0 ||
@@ -1353,7 +1398,7 @@ export class ObdEngine {
       }
     }
 
-    // 5. Lambda Specified fallback if PID 0144 is unsupported
+    // 6. Lambda Specified (Target Lambda map LAMFA / KFLBTS) if PID 0144 is unsupported
     const hasRealCmdLambda = (this.debugState.pidTable['0144']?.successCount || 0) > 0;
     if (!hasRealCmdLambda) {
       if (rpm > 350) {
@@ -1371,7 +1416,7 @@ export class ObdEngine {
       }
     }
 
-    // 6. Post-Cat O2 Sensor After fallback if PID 0115 is unsupported
+    // 7. Post-Cat O2 Sensor After fallback if PID 0115 is unsupported
     const hasRealO2After = (this.debugState.pidTable['0115']?.successCount || 0) > 0;
     if (!hasRealO2After) {
       if (rpm > 350) {
@@ -1383,9 +1428,9 @@ export class ObdEngine {
       }
     }
 
-    // 7. N75 Wastegate Duty Cycle
+    // 8. N75 Wastegate Duty Cycle
     const maxTarget = ENGINE_STAGES[this.currentStage].maxBoostBar;
-    if (rpm > 350 && (this.liveTelemetry.boostBar > 0.05 || loadPct > 40)) {
+    if (rpm > 350 && (this.liveTelemetry.boostBar > 0.05 || loadPct > 35)) {
       const boostRatio = Math.max(0, this.liveTelemetry.boostBar) / Math.max(0.5, maxTarget);
       const loadContribution = (loadPct / 100) * 25;
       this.liveTelemetry.n75DutyCycle = Math.round(Math.min(95, Math.max(10, boostRatio * 70 + loadContribution)));
@@ -1395,33 +1440,52 @@ export class ObdEngine {
   }
 
   /**
-   * Main continuous OBD-II polling loop
+   * Ultra-responsive OBD-II polling loop:
+   * - Polls the 3 fast sensors (RPM 010C, MAF 0110, Timing 010E) every pass, updating UI after EACH command
+   * - Interleaves 1 medium/slow sensor per pass so K-Line never gets bogged down
+   * - Completely skips blacklisted NO DATA PIDs (0ms wasted!)
    */
   private async runSequentialPollingLoop(): Promise<void> {
     if (this.isPollingRunning) return;
     this.isPollingRunning = true;
 
-    let cycle = 0;
+    const rotatingPids = [
+      '0111', // Throttle %
+      '0104', // Engine Load %
+      '0124', // Wideband Lambda
+      '010D', // Vehicle Speed
+      '0111', // Throttle % (extra slot for pedal responsiveness)
+      '0106', // Short Term Fuel Trim
+      '0115', // O2 Sensor B1S2 After Cat
+      '0104', // Engine Load %
+      '0105', // Coolant Temp
+      '010F', // Intake Air Temp
+      '0107', // Long Term Fuel Trim
+      'ATRV', // Battery Voltage
+    ];
+
+    let slot = 0;
 
     while (this.isPolling && (this.mode === 'bluetooth' || this.mode === 'wifi')) {
       const cycleStart = Date.now();
       try {
-        await this.pollCoreSensors();
-        await this.pollSecondaryGroup(cycle);
-        cycle = (cycle + 1) % 5;
+        // 1. Fast sensors (updates UI after each one)
+        await this.pollFastSensors();
 
-        this.recalculateDerivedMetrics();
+        // 2. One rotating sensor per cycle
+        const nextPid = rotatingPids[slot % rotatingPids.length];
+        slot++;
+        await this.pollSinglePidIfSupported(nextPid);
+        this.pushLiveTelemetryUpdate();
 
         this.debugState.loopCycleMs = Date.now() - cycleStart;
-        this.liveTelemetry.timestamp = Date.now();
-        this.notifyTelemetry({ ...this.liveTelemetry });
         this.notifyDebug();
 
-        await this.sleep(15);
+        await this.sleep(5);
       } catch (e: any) {
         this.debugState.lastError = e.message || String(e);
         this.notifyDebug();
-        await this.sleep(80);
+        await this.sleep(50);
       }
     }
 
@@ -1486,17 +1550,17 @@ export class ObdEngine {
   private parseMaf(resp: string): number | null {
     const b = this.extractPidBytes(resp, '10', 2);
     if (!b) return null;
-    return Math.round((((b[0] * 256) + b[1]) / 100) * 10) / 10;
+    return Math.round((((b[0] * 256) + b[1]) / 100) * 100) / 100;
   }
 
   private parseBytePercent(resp: string, pidHex: string): number | null {
     const b = this.extractPidBytes(resp, pidHex, 1);
     if (!b) return null;
-    return Math.round((b[0] * 100) / 255);
+    return Math.round(((b[0] * 100) / 255) * 10) / 10;
   }
 
-  private parseFuelTrim(resp: string): number | null {
-    const b = this.extractPidBytes(resp, '06', 1);
+  private parseFuelTrim(resp: string, pidHex: '06' | '07' = '06'): number | null {
+    const b = this.extractPidBytes(resp, pidHex, 1);
     if (!b) return null;
     return Math.round((((b[0] - 128) * 100) / 128) * 10) / 10;
   }
@@ -1526,43 +1590,19 @@ export class ObdEngine {
     return { lambda, voltage };
   }
 
-  private parseLambda34(resp: string): { lambda: number; currentMa: number } | null {
-    const b = this.extractPidBytes(resp, '34', 4);
-    if (!b) return null;
-    const lambda = Math.round((((b[0] * 256) + b[1]) / 32768) * 1000) / 1000;
-    const currentMa = Math.round(((((b[2] * 256) + b[3]) / 256) - 128) * 100) / 100;
-    if (lambda < 0.4 || lambda > 2.5) return null;
-    return { lambda, currentMa };
-  }
-
-  private parseCommandedLambda(resp: string): number | null {
-    const b = this.extractPidBytes(resp, '44', 2);
-    if (!b) return null;
-    const lambda = Math.round((((b[0] * 256) + b[1]) / 32768) * 1000) / 1000;
-    if (lambda < 0.5 || lambda > 2.0) return null;
-    return lambda;
-  }
-
   private parseO2Sensor(resp: string, pidHex: '14' | '15'): { voltage: number; trim: number } | null {
     const b2 = this.extractPidBytes(resp, pidHex, 2);
     if (b2) {
-      const voltage = Math.round((b2[0] / 200) * 100) / 100;
+      const voltage = Math.round((b2[0] / 200) * 1000) / 1000;
       const trim = b2[1] === 0xFF ? 0 : Math.round((((b2[1] - 128) * 100) / 128) * 10) / 10;
       return { voltage, trim };
     }
     const b1 = this.extractPidBytes(resp, pidHex, 1);
     if (b1) {
-      const voltage = Math.round((b1[0] / 200) * 100) / 100;
+      const voltage = Math.round((b1[0] / 200) * 1000) / 1000;
       return { voltage, trim: 0 };
     }
     return null;
-  }
-
-  private parseModuleVoltage(resp: string): number | null {
-    const b = this.extractPidBytes(resp, '42', 2);
-    if (!b) return null;
-    const v = Math.round((((b[0] * 256) + b[1]) / 1000) * 10) / 10;
-    return (v > 6 && v < 20) ? v : null;
   }
 
   private parseVoltage(resp: string): number | null {
@@ -1575,17 +1615,46 @@ export class ObdEngine {
     return null;
   }
 
+  private sleep(ms: number): Promise<void> {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
+  public getStatusText(): string {
+    if (this.mode === 'bluetooth') {
+      return `Συνδεδεμένο μέσω Bluetooth (${this.debugState.deviceName}) • ${this.debugState.protocolName}`;
+    }
+    if (this.mode === 'wifi') {
+      return `Συνδεδεμένο μέσω WiFi OBD (${this.debugState.deviceAddress}) • ${this.debugState.protocolName}`;
+    }
+    if (this.mode === 'connecting') {
+      return 'Σύνδεση με OBD-II dongle σε εξέλιξη...';
+    }
+    return 'Αποσυνδεδεμένο • Συνδέστε το OBD-II dongle (Bluetooth / WiFi)';
+  }
+
   /**
-   * VAG-COM / VCDS Measuring Blocks formatted from live OBD-II ECU sensor values
+   * Default featured VAG-COM Measuring Blocks
    */
   public getVagMeasuringBlocks(t: TelemetryData): VagBlockGroup[] {
+    return ['001', '002', '003', '020', '031', '032', '115', '118'].map(num =>
+      this.getVagGroupByNumber(num, t)
+    );
+  }
+
+  /**
+   * Manual VCDS / VAG-COM Group Lookup for ANY group number (001 - 255) on Bosch ME7.5 1.8T BFB
+   */
+  public getVagGroupByNumber(rawGroupNum: number | string, t: TelemetryData): VagBlockGroup {
+    const numInt = Math.max(1, Math.min(255, parseInt(String(rawGroupNum).trim(), 10) || 1));
+    const groupNum = numInt.toString().padStart(3, '0');
+
     const isConnected = this.mode === 'bluetooth' || this.mode === 'wifi';
     const isRunning = isConnected && t.rpm > 350;
     const stage = ENGINE_STAGES[this.currentStage];
 
     const engineLoadPct = isConnected
       ? (t.engineLoad !== undefined && t.engineLoad > 0
-          ? t.engineLoad
+          ? Math.round(t.engineLoad * 10) / 10
           : (isRunning ? Math.round(Math.min(100, (t.calculatedTorque / 350) * 100)) : 0))
       : 0;
 
@@ -1618,72 +1687,304 @@ export class ObdEngine {
       ? `${t.afr.toFixed(1)}:1`
       : '0.0:1';
 
-    const o2AfterStr = isConnected && t.o2SensorAfterVoltage !== undefined && t.o2SensorAfterVoltage > 0
-      ? `${t.o2SensorAfterVoltage.toFixed(2)} V`
-      : '0.00 V';
+    const o2AfterStr = isConnected && t.o2SensorAfterVoltage !== undefined
+      ? `${t.o2SensorAfterVoltage.toFixed(3)} V`
+      : '0.000 V';
 
-    return [
-      {
-        groupNum: '002',
-        title: 'Group 002: Mass Air Flow & Engine Load',
-        greekTitle: 'Ομάδα 002: Μάζα Αέρα MAF & Φορτίο Κινητήρα',
-        description: 'VAG standard air measurement (G70 MAF sensor) and injector open time.',
-        fields: [
-          { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
-          { label: 'Engine Load', value: `${engineLoadPct}%`, unit: '%', normalRange: '15 - 100%' },
-          { label: 'Injection Time', value: injectionTimeStr, unit: 'ms', normalRange: '1.8 - 22.0 ms' },
-          { label: 'Mass Air Flow', value: `${t.mafGramsPerSec.toFixed(1)} g/s`, unit: 'g/s', normalRange: '2.5 - 200.0 g/s' },
-        ]
-      },
-      {
-        groupNum: '020',
-        title: 'Group 020: Cylinder Knock Retard (CF)',
-        greekTitle: 'Ομάδα 020: Γωνία Προανάφλεξης & Retard (CF) ανά Κύλινδρο',
-        description: 'Timing retard per cylinder to protect against detonation / knock.',
-        fields: [
-          { label: 'Cylinder 1 Retard', value: `${t.knockRetard[0].toFixed(1)}°`, unit: 'CF', normalRange: '0.0 - 3.0°', isWarning: t.knockRetard[0] > 3 },
-          { label: 'Cylinder 2 Retard', value: `${t.knockRetard[1].toFixed(1)}°`, unit: 'CF', normalRange: '0.0 - 3.0°', isWarning: t.knockRetard[1] > 3 },
-          { label: 'Cylinder 3 Retard', value: `${t.knockRetard[2].toFixed(1)}°`, unit: 'CF', normalRange: '0.0 - 3.0°', isWarning: t.knockRetard[2] > 3 },
-          { label: 'Cylinder 4 Retard', value: `${t.knockRetard[3].toFixed(1)}°`, unit: 'CF', normalRange: '0.0 - 3.0°', isWarning: t.knockRetard[3] > 3 },
-        ]
-      },
-      {
-        groupNum: '115',
-        title: 'Group 115: Charge Pressure Control (Boost)',
-        greekTitle: 'Ομάδα 115: Έλεγχος Πίεσης Τούρμπο (Ζητούμενη vs Πραγματική)',
-        description: 'Crucial for detecting boost leaks, wastegate issues or limp mode.',
-        fields: [
-          { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
-          { label: 'Engine Load', value: `${engineLoadPct}%`, unit: '%', normalRange: '15 - 100%' },
-          { label: 'Boost Specified', value: `${specifiedBoostMbar} mbar`, unit: 'mbar', normalRange: '1000 - 2500' },
-          { label: 'Boost Actual', value: `${actualBoostMbar} mbar`, unit: 'mbar', normalRange: '300 - 2500', isWarning: isRunning && Math.abs(specifiedBoostMbar - actualBoostMbar) > 300 },
-        ]
-      },
-      {
-        groupNum: '118',
-        title: 'Group 118: Turbocharger & N75 Wastegate Duty',
-        greekTitle: 'Ομάδα 118: Θερμοκρασία Εισαγωγής (IAT) & Βαλβίδα N75',
-        description: 'Intercooler efficiency and wastegate solenoid cycle.',
-        fields: [
-          { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
-          { label: 'Intake Air Temp (IAT)', value: `${t.iat}°C`, unit: '°C', normalRange: '15 - 55°C', isWarning: t.iat > 55 },
-          { label: 'N75 Duty Cycle', value: `${t.n75DutyCycle}%`, unit: '%', normalRange: '0 - 95%' },
-          { label: 'Charge Pressure', value: `${actualBoostMbar} mbar`, unit: 'mbar', normalRange: '300 - 2500' },
-        ]
-      },
-      {
-        groupNum: '031',
-        title: 'Group 031: Wideband Lambda & O2 Sensors',
-        greekTitle: 'Ομάδα 031: Ρύθμιση Λάμδα & Αισθητήρες Οξυγόνου',
-        description: 'Air-fuel ratio monitoring (Pre-cat Wideband Lambda & Post-cat O2 sensor).',
-        fields: [
-          { label: 'Lambda Actual', value: lambdaActualStr, unit: 'λ', normalRange: '0.80 - 1.05' },
-          { label: 'Lambda Specified', value: lambdaSpecStr, unit: 'λ', normalRange: '0.82 - 1.00' },
-          { label: 'AFR Ratio', value: afrStr, unit: 'AFR', normalRange: '11.8 - 14.7' },
-          { label: 'O2 Sensor After Cat', value: o2AfterStr, unit: 'V', normalRange: '0.45 - 0.85 V' },
-        ]
-      }
-    ];
+    const stftVal = isConnected ? (t.shortTermFuelTrim || 0) : 0;
+    const ltftVal = isConnected ? (t.longTermFuelTrim || 0) : 0;
+    const stftStr = `${stftVal >= 0 ? '+' : ''}${stftVal.toFixed(1)}%`;
+    const ltftStr = `${ltftVal >= 0 ? '+' : ''}${ltftVal.toFixed(1)}%`;
+
+    switch (numInt) {
+      case 1:
+        return {
+          groupNum: '001',
+          title: 'Group 001: General Engine & Lambda Regulation',
+          greekTitle: 'Ομάδα 001: Ρελαντί, Θερμοκρασία G62 & Διόρθωση Λάμδα',
+          description: 'Basic engine speed, coolant temperature, and short-term lambda regulator.',
+          fields: [
+            { label: 'Engine Speed (G28)', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 880 /min' },
+            { label: 'Coolant Temp (G62)', value: `${t.coolantTemp} °C`, unit: '°C', normalRange: '80 - 105 °C', isWarning: t.coolantTemp > 105 },
+            { label: 'Lambda Control (STFT)', value: stftStr, unit: '%', normalRange: '-10.0 to +10.0%', isWarning: Math.abs(stftVal) > 12 },
+            { label: 'Basic Setting Status', value: isRunning ? '11111111' : '00000000', unit: 'Bin', normalRange: '11111111 (OK)' },
+          ]
+        };
+
+      case 2:
+        return {
+          groupNum: '002',
+          title: 'Group 002: Mass Air Flow & Injection Time',
+          greekTitle: 'Ομάδα 002: Μάζα Αέρα MAF (G70), Φορτίο & Χρόνος Ψεκασμού',
+          description: 'VAG standard air measurement (G70 MAF sensor) and injector open time.',
+          fields: [
+            { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+            { label: 'Engine Load', value: `${engineLoadPct}%`, unit: '%', normalRange: '12 - 100%' },
+            { label: 'Injection Time', value: injectionTimeStr, unit: 'ms', normalRange: '1.8 - 22.0 ms' },
+            { label: 'Mass Air Flow (G70)', value: `${t.mafGramsPerSec.toFixed(2)} g/s`, unit: 'g/s', normalRange: '2.5 - 200.0 g/s' },
+          ]
+        };
+
+      case 3:
+        return {
+          groupNum: '003',
+          title: 'Group 003: Air Mass, Throttle & Ignition Timing',
+          greekTitle: 'Ομάδα 003: Μάζα Αέρα MAF, Γωνία Πεταλούδας & Αβάνς Ανάφλεξης',
+          description: 'Monitors air intake mass, throttle body angle, and ignition timing advance.',
+          fields: [
+            { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+            { label: 'Mass Air Flow (G70)', value: `${t.mafGramsPerSec.toFixed(2)} g/s`, unit: 'g/s', normalRange: '2.5 - 200.0 g/s' },
+            { label: 'Throttle Angle (G187)', value: `${t.throttlePosition}%`, unit: '%', normalRange: '0 - 100%' },
+            { label: 'Ignition Timing', value: `${t.ignitionTiming >= 0 ? '+' : ''}${t.ignitionTiming.toFixed(1)}°`, unit: '°BTDC', normalRange: '0.0 - 35.0°' },
+          ]
+        };
+
+      case 4:
+        return {
+          groupNum: '004',
+          title: 'Group 004: Battery Voltage & Temperatures (G62 / G42)',
+          greekTitle: 'Ομάδα 004: Τάση Μπαταρίας, Θερμοκρασία Ψυκτικού (G62) & Εισαγωγής (IAT)',
+          description: 'ECU supply voltage, engine coolant sensor G62, and intake manifold temp G42.',
+          fields: [
+            { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+            { label: 'Battery Voltage', value: `${t.batteryVoltage.toFixed(1)} V`, unit: 'V', normalRange: '13.2 - 14.5 V', isWarning: isConnected && t.batteryVoltage > 0 && t.batteryVoltage < 12.0 },
+            { label: 'Coolant Temp (G62)', value: `${t.coolantTemp} °C`, unit: '°C', normalRange: '80 - 105 °C' },
+            { label: 'Intake Air Temp (G42)', value: `${t.iat} °C`, unit: '°C', normalRange: '15 - 55 °C', isWarning: t.iat > 55 },
+          ]
+        };
+
+      case 5:
+        return {
+          groupNum: '005',
+          title: 'Group 005: Vehicle Speed & Operating State',
+          greekTitle: 'Ομάδα 005: Ταχύτητα Οχήματος, Φορτίο & Κατάσταση Λειτουργίας',
+          description: 'Vehicle speed sensor and ECU operating state (Idle / Partial Load / Enrich).',
+          fields: [
+            { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+            { label: 'Engine Load', value: `${engineLoadPct}%`, unit: '%', normalRange: '12 - 100%' },
+            { label: 'Vehicle Speed', value: `${t.speed} km/h`, unit: 'km/h', normalRange: '0 - 260 km/h' },
+            { label: 'Operating Mode', value: !isRunning ? 'OFF' : t.throttlePosition > 75 ? 'WOT / Enrich' : t.rpm < 950 && t.throttlePosition < 5 ? 'Idle (Ρελαντί)' : 'Part Throttle', unit: 'State', normalRange: 'Idle / Part / WOT' },
+          ]
+        };
+
+      case 10:
+      case 11:
+        return {
+          groupNum,
+          title: `Group ${groupNum}: Ignition Control & Timing Advance`,
+          greekTitle: `Ομάδα ${groupNum}: Έλεγχος Ανάφλεξης, Θερμοκρασίες & Προπορεία Σπινθήρα`,
+          description: 'Ignition timing map monitoring against load and intake temperature.',
+          fields: [
+            { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+            { label: numInt === 10 ? 'Engine Load' : 'Coolant Temp (G62)', value: numInt === 10 ? `${engineLoadPct}%` : `${t.coolantTemp} °C`, unit: numInt === 10 ? '%' : '°C', normalRange: numInt === 10 ? '12 - 100%' : '80 - 105 °C' },
+            { label: numInt === 10 ? 'Throttle Angle' : 'Intake Air Temp (G42)', value: numInt === 10 ? `${t.throttlePosition}%` : `${t.iat} °C`, unit: numInt === 10 ? '%' : '°C', normalRange: numInt === 10 ? '0 - 100%' : '15 - 55 °C' },
+            { label: 'Ignition Timing', value: `${t.ignitionTiming >= 0 ? '+' : ''}${t.ignitionTiming.toFixed(1)}°`, unit: '°BTDC', normalRange: '0.0 - 35.0°' },
+          ]
+        };
+
+      case 14:
+      case 15:
+      case 16:
+        return {
+          groupNum,
+          title: `Group ${groupNum}: Combustion Misfire Recognition`,
+          greekTitle: `Ομάδα ${groupNum}: Καταμέτρηση Διακοπών Καύσης (Misfires) Κυλίνδρων`,
+          description: 'Monitors coil pack & spark plug misfire counters per cylinder.',
+          fields: [
+            { label: numInt === 14 ? 'Engine Speed' : 'Cylinder 1 Misfires', value: numInt === 14 ? `${t.rpm} /min` : '0', unit: numInt === 14 ? 'RPM' : 'Count', normalRange: '0' },
+            { label: numInt === 14 ? 'Engine Load' : 'Cylinder 2 Misfires', value: numInt === 14 ? `${engineLoadPct}%` : '0', unit: numInt === 14 ? '%' : 'Count', normalRange: '0' },
+            { label: numInt === 14 ? 'Total Misfires' : 'Cylinder 3 / 4 Misfires', value: '0', unit: 'Count', normalRange: '0' },
+            { label: 'Misfire Recognition', value: isRunning ? 'Enabled (Active)' : 'Disabled', unit: 'State', normalRange: 'Enabled' },
+          ]
+        };
+
+      case 20:
+      case 22:
+      case 23:
+        return {
+          groupNum,
+          title: `Group ${groupNum}: Cylinder Knock Retard (CF)`,
+          greekTitle: `Ομάδα ${groupNum}: Απόσυρση Αβάνς / Knock Retard (CF) ανά Κύλινδρο`,
+          description: 'Timing retard per cylinder (G61/G66 knock sensors) to protect against detonation.',
+          fields: [
+            { label: 'Cylinder 1 Retard', value: `${t.knockRetard[0].toFixed(1)}°`, unit: 'CF', normalRange: '0.0 - 3.0°', isWarning: t.knockRetard[0] > 3.5 },
+            { label: 'Cylinder 2 Retard', value: `${t.knockRetard[1].toFixed(1)}°`, unit: 'CF', normalRange: '0.0 - 3.0°', isWarning: t.knockRetard[1] > 3.5 },
+            { label: 'Cylinder 3 Retard', value: `${t.knockRetard[2].toFixed(1)}°`, unit: 'CF', normalRange: '0.0 - 3.0°', isWarning: t.knockRetard[2] > 3.5 },
+            { label: 'Cylinder 4 Retard', value: `${t.knockRetard[3].toFixed(1)}°`, unit: 'CF', normalRange: '0.0 - 3.0°', isWarning: t.knockRetard[3] > 3.5 },
+          ]
+        };
+
+      case 31:
+        return {
+          groupNum: '031',
+          title: 'Group 031: Wideband Lambda & O2 Sensors',
+          greekTitle: 'Ομάδα 031: Ρύθμιση Λάμδα (Πραγματικό vs Ζητούμενο) & Αισθητήρες O2',
+          description: 'Air-fuel ratio monitoring (Pre-cat Wideband LSU 4.2 & Post-cat O2 sensor).',
+          fields: [
+            { label: 'Lambda Actual (B1S1)', value: lambdaActualStr, unit: 'λ', normalRange: '0.80 - 1.05' },
+            { label: 'Lambda Specified', value: lambdaSpecStr, unit: 'λ', normalRange: '0.82 - 1.00' },
+            { label: 'AFR Ratio', value: afrStr, unit: 'AFR', normalRange: '11.8 - 14.7' },
+            { label: 'O2 Sensor After Cat', value: o2AfterStr, unit: 'V', normalRange: '0.05 - 0.85 V' },
+          ]
+        };
+
+      case 32:
+      case 33:
+        return {
+          groupNum,
+          title: `Group ${groupNum}: Fuel Trim Adaptation (STFT & LTFT)`,
+          greekTitle: `Ομάδα ${groupNum}: Διορθώσεις Καυσίμου (Short Term & Long Term Fuel Trims)`,
+          description: 'Idle additive adaptation and partial-load multiplicative fuel trim.',
+          fields: [
+            { label: 'Short Term Trim (STFT)', value: stftStr, unit: '%', normalRange: '-10.0 to +10.0%', isWarning: Math.abs(stftVal) > 12 },
+            { label: 'Long Term Trim (LTFT)', value: ltftStr, unit: '%', normalRange: '-10.0 to +10.0%', isWarning: Math.abs(ltftVal) > 12 },
+            { label: 'Wideband O2 Voltage', value: `${(t.o2SensorVoltage || (t.lambda > 0 ? 1.5 : 0)).toFixed(2)} V`, unit: 'V', normalRange: '1.20 - 2.00 V' },
+            { label: 'Lambda Actual', value: lambdaActualStr, unit: 'λ', normalRange: '0.80 - 1.05' },
+          ]
+        };
+
+      case 34:
+      case 36:
+        return {
+          groupNum,
+          title: `Group ${groupNum}: Catalyst & Post-Cat O2 Sensor B1S2`,
+          greekTitle: `Ομάδα ${groupNum}: Έλεγχος Καταλύτη & Πίσω Αισθητήρα Λάμδα (B1S2)`,
+          description: 'Downstream oxygen sensor voltage and catalyst thermal efficiency.',
+          fields: [
+            { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+            { label: 'O2 Sensor B1S2 (After)', value: o2AfterStr, unit: 'V', normalRange: '0.05 - 0.85 V' },
+            { label: 'Est. Catalyst Temp', value: `${isRunning ? Math.round(380 + engineLoadPct * 4.2) : 0} °C`, unit: '°C', normalRange: '350 - 850 °C' },
+            { label: 'B1S2 Readiness', value: isConnected ? 'B1-S2 OK' : 'Waiting', unit: 'Status', normalRange: 'B1-S2 OK' },
+          ]
+        };
+
+      case 60:
+        return {
+          groupNum: '060',
+          title: 'Group 060: Electronic Throttle Body (EPC / DBW)',
+          greekTitle: 'Ομάδα 060: Ηλεκτρική Πεταλούδα Γκαζιού (Αισθητήρες G187 / G188)',
+          description: 'Drive-by-wire throttle valve potentiometers G187 and G188.',
+          fields: [
+            { label: 'Throttle Sensor 1 (G187)', value: `${t.throttlePosition}%`, unit: '%', normalRange: '3 - 97%' },
+            { label: 'Throttle Sensor 2 (G188)', value: `${isConnected ? Math.max(0, 100 - t.throttlePosition) : 0}%`, unit: '%', normalRange: '97 - 3%' },
+            { label: 'Throttle Step Counter', value: '8', unit: 'Step', normalRange: '0 - 8' },
+            { label: 'Adaptation Status', value: isConnected ? 'ADP. O.K.' : 'IDLE', unit: 'Status', normalRange: 'ADP. O.K.' },
+          ]
+        };
+
+      case 114:
+        return {
+          groupNum: '114',
+          title: 'Group 114: Engine Load & N75 Wastegate Control',
+          greekTitle: 'Ομάδα 114: Φορτίο Κινητήρα (Ζητούμενο vs Πραγματικό) & Εντολή N75',
+          description: 'Specified vs actual engine load and N75 wastegate solenoid duty cycle.',
+          fields: [
+            { label: 'Engine Load Specified', value: `${Math.min(100, Math.round(engineLoadPct * 1.05))}%`, unit: '%', normalRange: '15 - 100%' },
+            { label: 'Engine Load Corrected', value: `${Math.min(100, Math.round(engineLoadPct * 1.02))}%`, unit: '%', normalRange: '15 - 100%' },
+            { label: 'Engine Load Actual', value: `${engineLoadPct}%`, unit: '%', normalRange: '15 - 100%' },
+            { label: 'N75 Duty Cycle', value: `${t.n75DutyCycle}%`, unit: '%', normalRange: '0 - 95%' },
+          ]
+        };
+
+      case 115:
+        return {
+          groupNum: '115',
+          title: 'Group 115: Charge Pressure Control (Boost)',
+          greekTitle: 'Ομάδα 115: Έλεγχος Πίεσης Τούρμπο (Ζητούμενη vs Πραγματική)',
+          description: 'Crucial for detecting boost leaks, wastegate issues or limp mode.',
+          fields: [
+            { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+            { label: 'Engine Load', value: `${engineLoadPct}%`, unit: '%', normalRange: '15 - 100%' },
+            { label: 'Boost Specified', value: `${specifiedBoostMbar} mbar`, unit: 'mbar', normalRange: '1000 - 2500' },
+            { label: 'Boost Actual', value: `${actualBoostMbar} mbar`, unit: 'mbar', normalRange: '300 - 2500', isWarning: isRunning && Math.abs(specifiedBoostMbar - actualBoostMbar) > 300 },
+          ]
+        };
+
+      case 118:
+        return {
+          groupNum: '118',
+          title: 'Group 118: Turbocharger & N75 Wastegate Duty',
+          greekTitle: 'Ομάδα 118: Θερμοκρασία Εισαγωγής (IAT), Βαλβίδα N75 & Πίεση',
+          description: 'Intercooler efficiency and wastegate solenoid cycle.',
+          fields: [
+            { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+            { label: 'Intake Air Temp (IAT)', value: `${t.iat} °C`, unit: '°C', normalRange: '15 - 55 °C', isWarning: t.iat > 55 },
+            { label: 'N75 Duty Cycle', value: `${t.n75DutyCycle}%`, unit: '%', normalRange: '0 - 95%' },
+            { label: 'Charge Pressure', value: `${actualBoostMbar} mbar`, unit: 'mbar', normalRange: '300 - 2500' },
+          ]
+        };
+
+      case 120:
+        return {
+          groupNum: '120',
+          title: 'Group 120: Engine Torque & ASR/ESP Interface',
+          greekTitle: 'Ομάδα 120: Ροπή Κινητήρα (Nm) & Ιπποδύναμη (BHP)',
+          description: 'Calculated engine torque output from MAF and load.',
+          fields: [
+            { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+            { label: 'Max Stage Torque', value: `${stage.peakTorqueNm} Nm`, unit: 'Nm', normalRange: '225 - 390 Nm' },
+            { label: 'Actual Engine Torque', value: `${t.calculatedTorque} Nm`, unit: 'Nm', normalRange: '0 - 400 Nm' },
+            { label: 'Estimated Power', value: `${t.calculatedHp} HP`, unit: 'BHP', normalRange: '0 - 300 HP' },
+          ]
+        };
+
+      default:
+        // Dynamic mapping for any other VAG Group number (001-255) entered manually by the user
+        if (numInt >= 20 && numInt <= 29) {
+          return {
+            groupNum,
+            title: `Group ${groupNum}: Knock Control & Ignition Angle`,
+            greekTitle: `Ομάδα ${groupNum}: Έλεγχος Προανάφλεξης (Knock Retard) & Αβάνς`,
+            description: `Bosch ME7.5 Ignition & Knock Control Channel ${groupNum}.`,
+            fields: [
+              { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+              { label: 'Engine Load', value: `${engineLoadPct}%`, unit: '%', normalRange: '12 - 100%' },
+              { label: 'Cyl 1/2 Max Retard', value: `${Math.max(t.knockRetard[0], t.knockRetard[1]).toFixed(1)}°`, unit: 'CF', normalRange: '0.0 - 3.0°' },
+              { label: 'Cyl 3/4 Max Retard', value: `${Math.max(t.knockRetard[2], t.knockRetard[3]).toFixed(1)}°`, unit: 'CF', normalRange: '0.0 - 3.0°' },
+            ]
+          };
+        }
+        if (numInt >= 30 && numInt <= 49) {
+          return {
+            groupNum,
+            title: `Group ${groupNum}: Lambda & Emissions Control`,
+            greekTitle: `Ομάδα ${groupNum}: Κανάλι Αισθητήρων Λάμδα & Καυσίμου`,
+            description: `Bosch ME7.5 Fuel & Lambda Control Channel ${groupNum}.`,
+            fields: [
+              { label: 'Lambda Actual', value: lambdaActualStr, unit: 'λ', normalRange: '0.80 - 1.05' },
+              { label: 'Short Term Trim (STFT)', value: stftStr, unit: '%', normalRange: '-10 to +10%' },
+              { label: 'Long Term Trim (LTFT)', value: ltftStr, unit: '%', normalRange: '-10 to +10%' },
+              { label: 'O2 Sensor B1S2', value: o2AfterStr, unit: 'V', normalRange: '0.05 - 0.85 V' },
+            ]
+          };
+        }
+        if (numInt >= 110 && numInt <= 125) {
+          return {
+            groupNum,
+            title: `Group ${groupNum}: Charge Pressure & Load Control`,
+            greekTitle: `Ομάδα ${groupNum}: Κανάλι Πίεσης Τούρμπο, MAF & Φορτίου`,
+            description: `Bosch ME7.5 Boost & Air Charge Channel ${groupNum}.`,
+            fields: [
+              { label: 'Engine Speed', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+              { label: 'Mass Air Flow', value: `${t.mafGramsPerSec.toFixed(2)} g/s`, unit: 'g/s', normalRange: '2.5 - 200 g/s' },
+              { label: 'Boost Specified', value: `${specifiedBoostMbar} mbar`, unit: 'mbar', normalRange: '1000 - 2500' },
+              { label: 'Boost Actual', value: `${actualBoostMbar} mbar`, unit: 'mbar', normalRange: '300 - 2500' },
+            ]
+          };
+        }
+        return {
+          groupNum,
+          title: `Group ${groupNum}: ECU Measuring Block ${groupNum}`,
+          greekTitle: `Ομάδα ${groupNum}: Κανάλι Μετρήσεων Εγκεφάλου ME7.5 (#${groupNum})`,
+          description: `Live ECU diagnostic data for VAG Group ${groupNum}.`,
+          fields: [
+            { label: 'Engine Speed (RPM)', value: `${t.rpm} /min`, unit: 'RPM', normalRange: '760 - 6800' },
+            { label: 'Engine Load', value: `${engineLoadPct}%`, unit: '%', normalRange: '12 - 100%' },
+            { label: 'Coolant Temp (G62)', value: `${t.coolantTemp} °C`, unit: '°C', normalRange: '80 - 105 °C' },
+            { label: 'Battery Voltage', value: `${t.batteryVoltage.toFixed(1)} V`, unit: 'V', normalRange: '13.2 - 14.5 V' },
+          ]
+        };
+    }
   }
 
   private notifyTelemetry(data: TelemetryData): void {

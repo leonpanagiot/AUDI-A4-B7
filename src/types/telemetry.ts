@@ -39,6 +39,7 @@ export interface TelemetryData {
   engineLoad?: number; // % from PID 0104
   lambdaSpecified?: number; // Target Lambda from PID 0144 or ME7.5 load map
   shortTermFuelTrim?: number; // % from PID 0106
+  longTermFuelTrim?: number; // % from PID 0107
   o2SensorVoltage?: number; // Pre-cat O2 sensor (V)
   o2SensorAfterVoltage?: number; // Post-cat O2 sensor after catalyst (V)
   injectionTimeMs?: number; // Injector open time (ms)
@@ -72,11 +73,29 @@ export interface TelemetryLogEntry {
   rpm: number;
   speed: number;
   boostBar: number;
+  specifiedBoostMbar: number;
+  actualBoostMbar: number;
   maf: number;
+  engineLoad: number;
+  throttle: number;
+  injectionTime: number;
+  lambda: number;
+  lambdaSpecified: number;
   afr: number;
+  stft: number;
+  ltft: number;
+  o2After: number;
   timing: number;
   knockMax: number;
+  knockCyl1: number;
+  knockCyl2: number;
+  knockCyl3: number;
+  knockCyl4: number;
   iat: number;
+  coolant: number;
+  n75: number;
+  hp: number;
+  battery: number;
 }
 
 export interface VagBlockField {
