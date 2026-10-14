@@ -38,24 +38,17 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android Licenses
-        run: yes | sdkmanager --licenses || true
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.5'
 
-      - name: Configure local.properties
-        run: |
-          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
-
       - name: Build Android APK with Gradle
         working-directory: android
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
+          echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
           gradle assembleDebug --stacktrace --no-daemon
 
       - name: Upload Debug APK Artifact

@@ -412,36 +412,59 @@ gradlew.bat assembleDebug
 on:
   push:
     branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  build:
+  build-apk:
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-    - name: Setup Gradle
-      uses: gradle/gradle-build-action@v3
+      - name: Install Dependencies
+        run: npm install --legacy-peer-deps
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew || true
+      - name: Build Web Dashboard
+        run: npm run build
 
-    - name: Build Debug APK
-      run: ./gradlew assembleDebug
+      - name: Copy Web Build into Android Assets
+        run: |
+          mkdir -p android/app/src/main/assets
+          cp -r dist/* android/app/src/main/assets/
 
-    - name: Upload APK artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: AudiBFBLive-debug-apk
-        path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Build Android APK with Gradle
+        working-directory: android
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
+          gradle assembleDebug --stacktrace --no-daemon
+
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudiBFBLive-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
 `
     }
   ];
