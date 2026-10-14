@@ -52,6 +52,9 @@ export interface ObdDebugState {
   kLineDroppedFrames: number;
   supportedSensorsCount: number;
   avgCommandMs: number;
+  lastCommandLatencyMs: number;
+  minCommandLatencyMs: number;
+  maxCommandLatencyMs: number;
   lastBridgeLatencyMs: number;
   avgBridgeLatencyMs: number;
   commandsPerSecHz: number;
@@ -345,6 +348,10 @@ class ObdEngine {
   private lastBridgeLatencyMs: number = 0;
   private recentBridgeLatencies: number[] = [];
 
+  // High-Resolution Latency Profiler (TX -> RX)
+  private minCommandLatencyMs: number = 9999;
+  private maxCommandLatencyMs: number = 0;
+
   // Verified KWP2000 Diagnostic Session flag (true only when 10 89 -> 50 89 or 21 XX -> 61 XX succeeds)
   private kwpSessionActive: boolean = false;
 
@@ -368,6 +375,9 @@ class ObdEngine {
     kLineDroppedFrames: 0,
     supportedSensorsCount: 0,
     avgCommandMs: 0,
+    lastCommandLatencyMs: 0,
+    minCommandLatencyMs: 0,
+    maxCommandLatencyMs: 0,
     lastBridgeLatencyMs: 0,
     avgBridgeLatencyMs: 0,
     commandsPerSecHz: 0,
@@ -422,6 +432,11 @@ class ObdEngine {
     this.unsupportedPids.add('2186');
     this.kwpSessionActive = false;
     this.recentLatencies = [];
+    this.minCommandLatencyMs = 9999;
+    this.maxCommandLatencyMs = 0;
+    this.debugState.lastCommandLatencyMs = 0;
+    this.debugState.minCommandLatencyMs = 0;
+    this.debugState.maxCommandLatencyMs = 0;
     this.lastBridgeLatencyMs = 0;
     this.recentBridgeLatencies = [];
     this.debugState.lastBridgeLatencyMs = 0;
@@ -1582,7 +1597,8 @@ class ObdEngine {
 
   /**
    * Serialized raw command sender with mutex lock so two commands NEVER overlap on the socket.
-   * Includes a 4ms macrotask yield before synchronous AndroidOBD JNI calls so React renders immediately and never freezes the UI thread.
+   * Serialized raw command sender with mutex lock so two commands NEVER overlap on the socket.
+   * Tight execution with zero setTimeout delays.
    */
   public async sendObdCommand(cmd: string): Promise<string> {
     const run = async (): Promise<string> => {
@@ -1591,13 +1607,11 @@ class ObdEngine {
 
       // 1. Android Native Bridge (Bluetooth Classic RFCOMM SPP & TCP Socket)
       if (this.isNativeAndroid() && window.AndroidOBD) {
-        // Yield to browser macrotask queue before synchronous JNI call so UI updates render immediately
-        await new Promise<void>(resolve => setTimeout(resolve, 0));
-        const tBridge = Date.now();
+        const tBridge = performance.now();
         const res = window.AndroidOBD.sendRawCommand(cleanCmd) || '';
-        this.lastBridgeLatencyMs = Math.max(1, Date.now() - tBridge);
+        this.lastBridgeLatencyMs = Math.max(0.1, Math.round((performance.now() - tBridge) * 10) / 10);
         this.recentBridgeLatencies.push(this.lastBridgeLatencyMs);
-        if (this.recentBridgeLatencies.length > 20) this.recentBridgeLatencies.shift();
+        if (this.recentBridgeLatencies.length > 30) this.recentBridgeLatencies.shift();
         this.debugState.lastBridgeLatencyMs = this.lastBridgeLatencyMs;
         this.debugState.avgBridgeLatencyMs = Math.round(
           this.recentBridgeLatencies.reduce((a, b) => a + b, 0) / this.recentBridgeLatencies.length
@@ -1617,27 +1631,19 @@ class ObdEngine {
             await this.bleTxChar.writeValue(payload);
           }
 
-          let timeoutMs = (cleanCmd === 'ATZ' || cleanCmd.startsWith('0100') || cleanCmd === '03' || cleanCmd === '07') ? 3800 : 650;
-          const start = Date.now();
-          while (Date.now() - start < timeoutMs) {
-            const upperBuf = this.bleReceiveBuffer.toUpperCase();
-            if (upperBuf.includes('SEARCHING') || upperBuf.includes('BUS INIT')) {
-              timeoutMs = 4500;
-            }
-            if (this.bleReceiveBuffer.includes('>')) {
-              break;
-            }
-            await new Promise<void>(resolve => {
-              const timer = setTimeout(() => {
-                if (this.blePromptResolver) {
-                  this.blePromptResolver = null;
-                }
-                resolve();
-              }, 15);
-              this.blePromptResolver = () => {
-                clearTimeout(timer);
-                resolve();
-              };
+          if (!this.bleReceiveBuffer.includes('>')) {
+            await new Promise<void>((resolve) => {
+              this.blePromptResolver = resolve;
+              if (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal) {
+                const timeoutMs = (cleanCmd === 'ATZ' || cleanCmd.startsWith('0100') || cleanCmd === '03' || cleanCmd === '07') ? 3800 : 650;
+                const signal = AbortSignal.timeout(timeoutMs);
+                signal.addEventListener('abort', () => {
+                  if (this.blePromptResolver === resolve) {
+                    this.blePromptResolver = null;
+                  }
+                  resolve();
+                }, { once: true });
+              }
             });
           }
           this.blePromptResolver = null;
@@ -1661,15 +1667,23 @@ class ObdEngine {
     name: string,
     parser: (raw: string) => string | null
   ): Promise<string | null> {
-    const start = Date.now();
+    const tSend = performance.now();
     const raw = await this.sendObdCommand(pid);
+    const tRecv = performance.now();
+    const latency = Math.max(0.1, Math.round((tRecv - tSend) * 10) / 10);
     const nowMs = Date.now();
-    const latency = Math.max(1, nowMs - start);
     const nowStr = new Date().toLocaleTimeString('el-GR', { hour12: false });
+
+    // Profile command round-trip latency
+    this.debugState.lastCommandLatencyMs = latency;
+    if (latency < this.minCommandLatencyMs) this.minCommandLatencyMs = latency;
+    if (latency > this.maxCommandLatencyMs) this.maxCommandLatencyMs = latency;
+    this.debugState.minCommandLatencyMs = this.minCommandLatencyMs === 9999 ? latency : this.minCommandLatencyMs;
+    this.debugState.maxCommandLatencyMs = this.maxCommandLatencyMs;
 
     // Track rolling average command latency & Hz
     this.recentLatencies.push(latency);
-    if (this.recentLatencies.length > 20) {
+    if (this.recentLatencies.length > 30) {
       this.recentLatencies.shift();
     }
     const sumLat = this.recentLatencies.reduce((a, b) => a + b, 0);
@@ -1700,7 +1714,7 @@ class ObdEngine {
     const parsedStr = parser(raw);
     if (parsedStr !== null) {
       if (entry.lastValidTimestampMs > 0) {
-        entry.refreshIntervalMs = nowMs - entry.lastValidTimestampMs;
+        entry.refreshIntervalMs = Math.round(nowMs - entry.lastValidTimestampMs);
       }
       entry.lastValidTimestampMs = nowMs;
       entry.parsedValue = parsedStr;
@@ -1710,6 +1724,9 @@ class ObdEngine {
       this.debugState.ecuLocked = true;
       this.unsupportedPids.delete(pid);
       this.recordCommandLog(pid, raw, parsedStr, latency, false);
+
+      // PUSH DATA TO UI IMMEDIATELY UPON PACKET VALIDATION!
+      this.pushLiveTelemetryUpdate();
     } else if (raw.toUpperCase().includes('SEARCHING') || raw.toUpperCase().includes('BUS INIT')) {
       entry.status = 'searching';
       entry.parsedValue = 'SEARCHING...';
@@ -1770,7 +1787,7 @@ class ObdEngine {
   private startRealObdPolling(): void {
     if (this.isPollingRunning) return;
     this.isPolling = true;
-    this.runSequentialPollingLoop();
+    this.pollingLoop();
   }
 
   private stopRealObdPolling(): void {
@@ -2101,21 +2118,21 @@ class ObdEngine {
   }
 
   /**
-   * Flat Full-Cycle Polling Loop:
-   * - Polls EVERY supported sensor sequentially in a single flat cycle (no priority starvation!)
-   * - Zero artificial delays between commands
-   * - Skips all unsupported PIDs automatically
-   * - Updates UI immediately after each valid sensor response
-   * - Measures exact full-cycle duration (loopCycleMs) and per-sensor refreshIntervalMs
+   * Tight Sequential Polling Loop:
+   * - Profiles precise request-to-response latency for every command using performance.now()
+   * - Completely eliminates all setTimeout calls and artificial sleeps
+   * - Pushes data to the UI immediately upon packet validation
+   * - Sequentially queries all supported sensors without priority starvation
+   * - Automatically skips unsupported PIDs to maximize loop throughput
    */
-  private async runSequentialPollingLoop(): Promise<void> {
+  public async pollingLoop(): Promise<void> {
     if (this.isPollingRunning) return;
     this.isPollingRunning = true;
 
     const allPidsOrder = INITIAL_PID_CATALOG.map(i => i.pid);
 
     while (this.isPolling && (this.mode === 'bluetooth' || this.mode === 'wifi')) {
-      const cycleStart = Date.now();
+      const cycleStart = performance.now();
       try {
         const supportedQueue = allPidsOrder.filter(pid => !this.unsupportedPids.has(pid));
         this.debugState.supportedSensorsCount = supportedQueue.length;
@@ -2125,7 +2142,8 @@ class ObdEngine {
           await this.pollSinglePidIfSupported(pid);
         }
 
-        this.debugState.loopCycleMs = Math.max(1, Date.now() - cycleStart);
+        const cycleDuration = Math.round(performance.now() - cycleStart);
+        this.debugState.loopCycleMs = Math.max(1, cycleDuration);
         this.notifyDebug();
       } catch (e: any) {
         this.debugState.lastError = e.message || String(e);
@@ -2134,6 +2152,11 @@ class ObdEngine {
     }
 
     this.isPollingRunning = false;
+  }
+
+  // Backward compatibility alias
+  private async runSequentialPollingLoop(): Promise<void> {
+    return this.pollingLoop();
   }
 
   // --- Universal ELM327 Hex Response Parsers ---

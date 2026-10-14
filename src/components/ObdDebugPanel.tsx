@@ -233,6 +233,12 @@ ${recentLogs}
                 </span>
               )}
             </div>
+            {debug.minCommandLatencyMs > 0 && (
+              <div className="text-[10px] font-mono text-slate-400 flex items-center justify-between border-t border-slate-800/60 pt-1 mt-0.5">
+                <span>TX→RX: <strong className="text-white">{debug.lastCommandLatencyMs} ms</strong></span>
+                <span className="text-slate-500 text-[9px]">(min: {debug.minCommandLatencyMs}ms • max: {debug.maxCommandLatencyMs}ms)</span>
+              </div>
+            )}
           </div>
         </div>
 
