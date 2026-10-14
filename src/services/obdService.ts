@@ -507,8 +507,11 @@ export class ObdEngine {
           optionalServices: [
             '0000fff0-0000-1000-8000-00805f9b34fb',
             '0000ffe0-0000-1000-8000-00805f9b34fb',
+            '000018f0-0000-1000-8000-00805f9b34fb',
             '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
             '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+            'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+            'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f'
           ]
         });
 
@@ -538,18 +541,20 @@ export class ObdEngine {
           }
         }
 
-        // Initialize ELM327 commands
+        // Initialize ELM327 commands with fast adaptive timing (ATAT2) and 200ms timeout (ATST 32)
         await this.sendObdCommand('ATZ');
         await this.sleep(300);
         await this.sendObdCommand('ATE0');
         await this.sendObdCommand('ATL0');
         await this.sendObdCommand('ATS1');
         await this.sendObdCommand('ATH0');
+        await this.sendObdCommand('ATAT2');
+        await this.sendObdCommand('ATST 32');
         await this.sendObdCommand('ATSP0');
         await this.sendObdCommand('0100');
 
         this.mode = 'bluetooth';
-        this.notifyStatus(`Συνδέθηκε επιτυχώς μέσω Web Bluetooth με ${device.name || 'ELM327 BLE'}!`, 'bluetooth');
+        this.notifyStatus(`Συνδέθηκε επιτυχώς μέσω Bluetooth με ${device.name || 'ELM327 BLE'}! Ζωντανά δεδομένα ενεργά.`, 'bluetooth');
         this.startRealObdPolling();
         return true;
       } catch (err: any) {
@@ -653,6 +658,25 @@ export class ObdEngine {
       await port.open({ baudRate: 38400 });
 
       this.serialPort = port;
+      if (port.writable) {
+        this.serialWriter = port.writable.getWriter();
+      }
+      if (port.readable) {
+        const textDecoder = new TextDecoderStream();
+        port.readable.pipeTo(textDecoder.writable);
+        this.serialReader = textDecoder.readable.getReader();
+      }
+
+      await this.sendObdCommand('ATZ');
+      await this.sleep(300);
+      await this.sendObdCommand('ATE0');
+      await this.sendObdCommand('ATL0');
+      await this.sendObdCommand('ATS1');
+      await this.sendObdCommand('ATH0');
+      await this.sendObdCommand('ATAT2');
+      await this.sendObdCommand('ATST 32');
+      await this.sendObdCommand('ATSP0');
+
       this.mode = 'usb';
       this.notifyStatus('Συνδέθηκε επιτυχώς μέσω USB OBD2 καλωδίου!', 'usb');
       this.startRealObdPolling();
@@ -668,9 +692,6 @@ export class ObdEngine {
   /**
    * Sends raw AT / OBD-II PID command to adapter and awaits response
    */
-  /**
-   * Sends raw AT / OBD-II PID command to adapter and awaits response
-   */
   public async sendObdCommand(cmd: string): Promise<string> {
     // 1. Android Native Bridge (Bluetooth Classic RFCOMM SPP & TCP Socket)
     if (this.isNativeAndroid() && window.AndroidOBD) {
@@ -683,14 +704,20 @@ export class ObdEngine {
       try {
         this.bleReceiveBuffer = '';
         const enc = new TextEncoder();
-        await this.bleTxChar.writeValue(enc.encode(cmd.trim() + '\r'));
+        const payload = enc.encode(cmd.trim() + '\r');
+        if (this.bleTxChar.properties?.writeWithoutResponse && this.bleTxChar.writeValueWithoutResponse) {
+          await this.bleTxChar.writeValueWithoutResponse(payload);
+        } else {
+          await this.bleTxChar.writeValue(payload);
+        }
 
+        const timeoutMs = (cmd === 'ATZ' || cmd === '0100' || cmd === '03' || cmd === '07') ? 1400 : 650;
         const start = Date.now();
-        while (Date.now() - start < 800) {
+        while (Date.now() - start < timeoutMs) {
           if (this.bleReceiveBuffer.includes('>')) {
             break;
           }
-          await new Promise(r => setTimeout(r, 12));
+          await new Promise(r => setTimeout(r, 10));
         }
         return this.bleReceiveBuffer.replace('>', '').trim();
       } catch (e: any) {
@@ -704,7 +731,7 @@ export class ObdEngine {
         await this.serialWriter.write(new TextEncoder().encode(cmd.trim() + '\r'));
         let res = '';
         const start = Date.now();
-        while (Date.now() - start < 800) {
+        while (Date.now() - start < 750) {
           const { value, done } = await this.serialReader.read();
           if (done) break;
           if (value) {
