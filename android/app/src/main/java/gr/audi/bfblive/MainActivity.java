@@ -296,11 +296,6 @@ public class MainActivity extends AppCompatActivity {
                 return "ERROR_NOT_CONNECTED";
             }
             try {
-                // Clear any leftover bytes in the socket buffer before transmitting
-                while (obdInputStream.available() > 0) {
-                    obdInputStream.read();
-                }
-
                 String cleanCmd = cmd.trim().toUpperCase();
                 String fullCmd = cleanCmd + "\r";
                 obdOutputStream.write(fullCmd.getBytes(StandardCharsets.US_ASCII));
@@ -309,9 +304,9 @@ public class MainActivity extends AppCompatActivity {
                 StringBuilder sb = new StringBuilder();
                 long startTime = System.currentTimeMillis();
                 
-                // Allow generous timeout for K-Line 5-baud handshake (0100 / ATSP takes 5-9 seconds)
+                // Allow generous timeout for K-Line 5-baud handshake (ATSP4 / 0100 / 010C / 0105 takes 5-9 seconds)
                 // Single PIDs during live polling respond in 50-150ms and break immediately on '>'
-                long maxWait = (cleanCmd.startsWith("0100") || cleanCmd.startsWith("ATSP") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 12000 : 1000;
+                long maxWait = (cleanCmd.startsWith("0100") || cleanCmd.startsWith("010C") || cleanCmd.startsWith("0105") || cleanCmd.startsWith("ATSP") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 12000 : 1000;
                 byte[] buffer = new byte[256];
 
                 while (System.currentTimeMillis() - startTime < maxWait) {
@@ -322,7 +317,7 @@ public class MainActivity extends AppCompatActivity {
                             sb.append(chunk);
                             String current = sb.toString().toUpperCase();
                             
-                            // If ELM327 is performing bus initialization or 5-baud search, extend wait up to 14s
+                            // If ELM327 is performing bus initialization, extend wait up to 14s
                             if (current.contains("SEARCHING") || current.contains("BUS INIT")) {
                                 maxWait = 14000;
                             }
@@ -335,20 +330,6 @@ public class MainActivity extends AppCompatActivity {
                     } else {
                         Thread.sleep(2);
                     }
-                }
-
-                // If timeout occurred without ELM prompt '>', force-recover the adapter with carriage return
-                boolean hadPrompt = sb.indexOf(">") != -1;
-                if (!hadPrompt) {
-                    Log.w(TAG, "Command " + cleanCmd + " timed out without prompt '>' after " + (System.currentTimeMillis() - startTime) + "ms. Sending break.");
-                    try {
-                        obdOutputStream.write("\r".getBytes(StandardCharsets.US_ASCII));
-                        obdOutputStream.flush();
-                        Thread.sleep(80);
-                        while (obdInputStream.available() > 0) {
-                            obdInputStream.read();
-                        }
-                    } catch (Exception ignored) {}
                 }
 
                 String raw = sb.toString();
