@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.AudiBFBLive" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/audi_red</item>
+        <item name="android:statusBarColor">@color/cockpit_bg</item>
+        <item name="android:navigationBarColor">@color/cockpit_bg</item>
+    </style>
+    <style name="Theme.AudiBFBLive.Fullscreen" parent="Theme.AudiBFBLive">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+</resources>
