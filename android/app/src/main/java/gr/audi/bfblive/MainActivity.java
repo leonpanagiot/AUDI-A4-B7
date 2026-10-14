@@ -240,7 +240,12 @@ public class MainActivity extends AppCompatActivity {
                         obdSocket = socket;
                         obdInputStream = socket.getInputStream();
                         obdOutputStream = socket.getOutputStream();
-                        initElm327();
+                        
+                        // Clean socket receive buffer from any initial adapter bytes
+                        Thread.sleep(80);
+                        while (obdInputStream.available() > 0) {
+                            obdInputStream.read();
+                        }
                         return true;
                     }
                 } catch (Exception e) {
@@ -258,11 +263,17 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     Socket socket = new Socket();
                     socket.connect(new InetSocketAddress(ip, port), 5000);
-                    socket.setSoTimeout(3000);
+                    socket.setSoTimeout(15000); // 15 seconds socket read timeout for K-Line 5-baud sync
+                    socket.setTcpNoDelay(true); // Disable Nagle's algorithm for immediate packet dispatch
                     wifiSocket = socket;
                     obdInputStream = socket.getInputStream();
                     obdOutputStream = socket.getOutputStream();
-                    initElm327();
+                    
+                    // Clean socket receive buffer from any greeting banner or prompt
+                    Thread.sleep(80);
+                    while (obdInputStream.available() > 0) {
+                        obdInputStream.read();
+                    }
                     return true;
                 } catch (Exception e) {
                     Log.e(TAG, "WiFi connect failed: " + e.getMessage());
@@ -270,26 +281,6 @@ public class MainActivity extends AppCompatActivity {
                     return false;
                 }
             }
-        }
-
-        private void initElm327() {
-            try {
-                Thread.sleep(180);
-                executeRaw("ATZ");
-                Thread.sleep(350);
-                executeRaw("ATE0"); // Echo off
-                executeRaw("ATL0"); // Linefeeds off
-                executeRaw("ATS1"); // Spaces on for reliable framing
-                executeRaw("ATH0"); // Headers off
-                executeRaw("ATAT1"); // Safe adaptive timing for K-Line init
-                executeRaw("ATST 64"); // 400ms timeout for reliable K-Line 5-baud sync
-                executeRaw("ATSPA4"); // Try ATSPA4 first (ISO 14230-4 KWP Auto)
-                String res0100 = executeRaw("0100"); // ECU wake up & protocol lock
-                if (res0100 != null && res0100.contains("41")) {
-                    executeRaw("ATAT2");
-                    executeRaw("ATST 28");
-                }
-            } catch (Exception ignored) {}
         }
 
         @JavascriptInterface
@@ -304,41 +295,63 @@ public class MainActivity extends AppCompatActivity {
                 return "ERROR_NOT_CONNECTED";
             }
             try {
-                // Clear any leftover bytes
+                // Clear any leftover bytes in the socket buffer before transmitting
                 while (obdInputStream.available() > 0) {
                     obdInputStream.read();
                 }
 
                 String cleanCmd = cmd.trim().toUpperCase();
                 String fullCmd = cleanCmd + "\r";
-                obdOutputStream.write(fullCmd.getBytes());
+                obdOutputStream.write(fullCmd.getBytes(StandardCharsets.US_ASCII));
                 obdOutputStream.flush();
 
                 StringBuilder sb = new StringBuilder();
                 long startTime = System.currentTimeMillis();
-                long maxWait = (cleanCmd.startsWith("0100") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 4200 : 650;
-                byte[] buffer = new byte[128];
+                
+                // Allow generous timeout for K-Line 5-baud handshake (0100 / ATSP takes 5-9 seconds)
+                // Single PIDs during live polling respond in 50-150ms and break immediately on '>'
+                long maxWait = (cleanCmd.startsWith("0100") || cleanCmd.startsWith("ATSP") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 12000 : 1000;
+                byte[] buffer = new byte[256];
 
                 while (System.currentTimeMillis() - startTime < maxWait) {
                     if (obdInputStream.available() > 0) {
                         int read = obdInputStream.read(buffer);
                         if (read > 0) {
-                            String chunk = new String(buffer, 0, read);
+                            String chunk = new String(buffer, 0, read, StandardCharsets.US_ASCII);
                             sb.append(chunk);
                             String current = sb.toString().toUpperCase();
+                            
+                            // If ELM327 is performing bus initialization or 5-baud search, extend wait up to 14s
                             if (current.contains("SEARCHING") || current.contains("BUS INIT")) {
-                                maxWait = 5000; // Wait for full K-Line 5-baud handshake
+                                maxWait = 14000;
                             }
+                            
+                            // Prompt character '>' strictly marks the end of ELM327 transmission
                             if (sb.indexOf(">") != -1) {
                                 break;
                             }
                         }
                     } else {
-                        Thread.sleep(1);
+                        Thread.sleep(2);
                     }
                 }
 
-                String res = sb.toString().replace(">", "").trim();
+                // If timeout occurred without ELM prompt '>', force-recover the adapter with carriage return
+                boolean hadPrompt = sb.indexOf(">") != -1;
+                if (!hadPrompt) {
+                    Log.w(TAG, "Command " + cleanCmd + " timed out without prompt '>' after " + (System.currentTimeMillis() - startTime) + "ms. Sending break.");
+                    try {
+                        obdOutputStream.write("\r".getBytes(StandardCharsets.US_ASCII));
+                        obdOutputStream.flush();
+                        Thread.sleep(80);
+                        while (obdInputStream.available() > 0) {
+                            obdInputStream.read();
+                        }
+                    } catch (Exception ignored) {}
+                }
+
+                String raw = sb.toString();
+                String res = raw.replace(">", "").trim();
                 return res.isEmpty() ? "NO_DATA" : res;
             } catch (Exception e) {
                 Log.e(TAG, "Command execution error: " + e.getMessage());

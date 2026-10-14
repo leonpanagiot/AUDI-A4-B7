@@ -1569,58 +1569,49 @@ class ObdEngine {
 
       let locked = false;
 
-      // 3A. First check if ECU is ALREADY locked from native initElm327()
-      if (!forcedProtocolCmd) {
-        this.notifyStatus('Έλεγχος ενεργής σύνδεσης ECU (0100)...', this.mode);
-        const t0 = performance.now();
-        const initialCheck = await this.sendObdCommand('0100');
-        const durMs = Math.max(0.1, Math.round((performance.now() - t0) * 10) / 10);
-        const val = this.validatePid00Response(initialCheck);
-        if (val.valid && val.bytes) {
-          locked = true;
-          const maskHex = val.bytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-          this.recordCommandLog('0100', initialCheck, `ECU ALREADY LOCKED [${durMs}ms] - Bitmask: ${maskHex}`, durMs, false);
-          this.debugState.supportedPids0120 = initialCheck;
-          this.applyPidSupportBitmask(initialCheck, 1);
-        } else {
-          this.recordCommandLog('0100', initialCheck, `ECU not locked yet [${durMs}ms]`, durMs, true);
-        }
-      }
-
-      // 3B. Try VAG K-Line protocols in optimal order for Audi BFB ME7.5:
-      // Priority 1: ATSPA4 (ISO 14230-4 KWP Auto - previously proven on Audi BFB ME7.5)
+      // 3. Try VAG K-Line protocols in strictly prioritized order for Audi BFB ME7.5:
+      // Priority 1: ATSPA4 (ISO 14230-4 KWP Auto - previously working on Audi BFB ME7.5)
       // Priority 2: ATSP4  (Direct ISO 14230-4 KWP 5-baud)
       // Priority 3: ATSPA3 (ISO 9141-2 Auto)
       // Priority 4: ATSP3  (Direct ISO 9141-2 5-baud)
       // Priority 5: ATSP5  (ISO 14230-4 KWP Fast Init)
       // Priority 6: ATSP0  (ELM Auto Search)
       // STRICTLY NO ATSP6 (CAN)! Audi A4 B7 1.8T BFB uses K-Line (Pin 7). ATSP6 causes timeout freezes on ME7.5!
-      if (!locked) {
-        const protocolsToTry = forcedProtocolCmd
-          ? [forcedProtocolCmd]
-          : ['ATSPA4', 'ATSP4', 'ATSPA3', 'ATSP3', 'ATSP5', 'ATSP0'];
+      const protocolsToTry = forcedProtocolCmd
+        ? [forcedProtocolCmd]
+        : ['ATSPA4', 'ATSP4', 'ATSPA3', 'ATSP3', 'ATSP5', 'ATSP0'];
 
-        for (const protoCmd of protocolsToTry) {
-          if (this.mode === 'disconnected') return false;
+      for (const protoCmd of protocolsToTry) {
+        if (this.mode === 'disconnected') return false;
 
-          this.notifyStatus(`Κλείδωμα εγκεφάλου ECU (${protoCmd})...`, this.mode);
-          await this.sleep(40);
-          await executeLoggedStep(protoCmd, `Set Protocol ${protoCmd}`);
+        this.notifyStatus(`Κλείδωμα εγκεφάλου ECU (${protoCmd})...`, this.mode);
+        await this.sleep(40);
+        await executeLoggedStep(protoCmd, `Set Protocol ${protoCmd}`);
 
-          const t0 = performance.now();
-          const lockResp = await this.sendObdCommand('0100');
-          const durMs = Math.max(0.1, Math.round((performance.now() - t0) * 10) / 10);
+        const t0 = performance.now();
+        const lockResp = await this.sendObdCommand('0100');
+        const durMs = Math.max(0.1, Math.round((performance.now() - t0) * 10) / 10);
 
-          const val = this.validatePid00Response(lockResp);
-          if (val.valid && val.bytes) {
-            locked = true;
-            const maskHex = val.bytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-            this.recordCommandLog('0100', lockResp, `ECU LOCKED (${protoCmd}) [${durMs}ms] - Bitmask: ${maskHex}`, durMs, false);
-            this.debugState.supportedPids0120 = lockResp;
-            this.applyPidSupportBitmask(lockResp, 1);
-            break;
-          } else {
-            this.recordCommandLog('0100', lockResp, `Protocol ${protoCmd} failed [${durMs}ms] (No valid 41 00 bitmask)`, durMs, true);
+        const val = this.validatePid00Response(lockResp);
+        if (val.valid && val.bytes) {
+          locked = true;
+          const maskHex = val.bytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+          this.recordCommandLog('0100', lockResp, `ECU LOCKED (${protoCmd}) [${durMs}ms] - Bitmask: ${maskHex}`, durMs, false);
+          this.debugState.supportedPids0120 = lockResp;
+          this.applyPidSupportBitmask(lockResp, 1);
+          break;
+        } else {
+          const reason = lockResp.includes('STOPPED')
+            ? 'ELM STOPPED (Interrupted/Busy)'
+            : lockResp.includes('SEARCHING')
+            ? 'Timeout during SEARCHING (No 41 00)'
+            : this.isNoData(lockResp)
+            ? 'NO DATA'
+            : lockResp;
+          this.recordCommandLog('0100', lockResp, `Protocol ${protoCmd} failed [${durMs}ms] (${reason})`, durMs, true);
+          // If stopped or aborted, give ELM a short breath
+          if (lockResp.includes('STOPPED')) {
+            await this.sleep(120);
           }
         }
       }
@@ -2055,7 +2046,7 @@ class ObdEngine {
             await new Promise<void>((resolve) => {
               this.blePromptResolver = resolve;
               if (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal) {
-                const timeoutMs = (cleanCmd === 'ATZ' || cleanCmd.startsWith('0100') || cleanCmd === '03' || cleanCmd === '07') ? 3800 : 650;
+                const timeoutMs = (cleanCmd === 'ATZ' || cleanCmd.startsWith('0100') || cleanCmd.startsWith('ATSP') || cleanCmd === '03' || cleanCmd === '07') ? 12000 : 800;
                 const signal = AbortSignal.timeout(timeoutMs);
                 signal.addEventListener('abort', () => {
                   if (this.blePromptResolver === resolve) {
