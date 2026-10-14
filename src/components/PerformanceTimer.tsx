@@ -4,7 +4,7 @@ import confetti from 'canvas-confetti';
 import { PerformanceRun } from '../types/telemetry';
 
 interface Props {
-  currentSpeed: number;
+  currentSpeed: number | null;
 }
 
 export const PerformanceTimer: React.FC<Props> = ({ currentSpeed }) => {
@@ -21,28 +21,7 @@ export const PerformanceTimer: React.FC<Props> = ({ currentSpeed }) => {
         return [];
       }
     }
-    // Default reference runs for Audi 1.8T BFB
-    return [
-      {
-        id: 'ref-1',
-        date: 'Audi BFB Stage 1 (210hp)',
-        zeroToHundredTime: 7.15,
-        hundredToTwoHundredTime: 18.4,
-        quarterMileTime: 15.1,
-        quarterMileTrapSpeed: 148,
-        peakGForce: 0.65,
-        notes: '1.25 bar boost, 100 octane fuel'
-      },
-      {
-        id: 'ref-2',
-        date: 'Audi BFB Stock (163hp)',
-        zeroToHundredTime: 8.6,
-        quarterMileTime: 16.4,
-        quarterMileTrapSpeed: 137,
-        peakGForce: 0.52,
-        notes: 'Εργοστασιακό BFB 163 PS'
-      }
-    ];
+    return [];
   });
 
   const startTimeRef = useRef<number | null>(null);
@@ -55,6 +34,8 @@ export const PerformanceTimer: React.FC<Props> = ({ currentSpeed }) => {
 
   // Speed-based trigger logic
   useEffect(() => {
+    if (currentSpeed === null) return;
+
     // If speed is 0 and we are idle, arm the launch control
     if (currentSpeed === 0 && status === 'idle') {
       setStatus('armed');
@@ -77,7 +58,6 @@ export const PerformanceTimer: React.FC<Props> = ({ currentSpeed }) => {
       const rounded = Math.round(t100 * 100) / 100;
       setZeroToHundred(rounded);
 
-      // Celebrate
       try {
         confetti({
           particleCount: 50,
@@ -86,7 +66,6 @@ export const PerformanceTimer: React.FC<Props> = ({ currentSpeed }) => {
         });
       } catch (e) {}
 
-      // Add to run history if realistic
       if (rounded > 3.0 && rounded < 20.0) {
         const newRun: PerformanceRun = {
           id: Date.now().toString(),
@@ -183,7 +162,9 @@ export const PerformanceTimer: React.FC<Props> = ({ currentSpeed }) => {
             <div className="text-center">
               <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Ταχυτητα</span>
               <div className="flex items-baseline justify-center gap-1">
-                <span className="text-4xl font-black font-mono text-white">{currentSpeed}</span>
+                <span className="text-4xl font-black font-mono text-white">
+                  {currentSpeed !== null ? currentSpeed : 'N/A'}
+                </span>
                 <span className="text-xs text-slate-400 font-bold">km/h</span>
               </div>
             </div>

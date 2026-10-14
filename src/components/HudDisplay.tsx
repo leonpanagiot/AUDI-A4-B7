@@ -11,11 +11,12 @@ export const HudDisplay: React.FC<Props> = ({ telemetry, onClose }) => {
   const [isMirrored, setIsMirrored] = useState(false);
   const [hudColor, setHudColor] = useState<'neon-green' | 'ice-cyan' | 'audi-red'>('neon-green');
 
-  const { speed, rpm, boostBar, calculatedHp, coolantTemp, iat } = telemetry;
-  const isShiftWarning = rpm >= 6400;
+  const { speed, rpm, boostBar, mafGramsPerSec, coolantTemp, iat } = telemetry;
+  const isShiftWarning = rpm !== null && rpm >= 6400;
 
   // Estimate gear
   const getGear = () => {
+    if (speed === null || rpm === null) return 'N/A';
     if (speed < 3 || rpm < 700) return 'N';
     const ratio = (speed / rpm) * 1000;
     if (ratio < 11) return '1';
@@ -115,9 +116,9 @@ export const HudDisplay: React.FC<Props> = ({ telemetry, onClose }) => {
           <div className="w-full bg-slate-900 h-3.5 rounded-full overflow-hidden p-0.5 border border-slate-800">
             <div
               className={`h-full rounded-full transition-all duration-75 ${
-                rpm >= 6400 ? 'bg-red-500 animate-pulse' : colorStyles.bar
+                rpm !== null && rpm >= 6400 ? 'bg-red-500 animate-pulse' : colorStyles.bar
               }`}
-              style={{ width: `${Math.min(100, (rpm / 8000) * 100)}%` }}
+              style={{ width: `${rpm !== null ? Math.min(100, (rpm / 8000) * 100) : 0}%` }}
             />
           </div>
         </div>
@@ -126,7 +127,7 @@ export const HudDisplay: React.FC<Props> = ({ telemetry, onClose }) => {
         <div className="flex items-baseline justify-center gap-6 my-4">
           <div className="text-center">
             <div className={`font-mono font-black text-8xl sm:text-9xl tracking-tighter ${colorStyles.text}`}>
-              {speed}
+              {speed !== null ? speed : 'N/A'}
             </div>
             <div className="text-sm sm:text-base font-mono uppercase tracking-widest text-slate-400 font-bold mt-1">
               KM / H
@@ -144,26 +145,26 @@ export const HudDisplay: React.FC<Props> = ({ telemetry, onClose }) => {
           </div>
         </div>
 
-        {/* Bottom HUD Metrics: Boost, BHP, IAT */}
+        {/* Bottom HUD Metrics: Boost, MAF, IAT */}
         <div className="grid grid-cols-3 gap-6 sm:gap-12 mt-4 text-center font-mono">
           <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-900">
             <span className="text-xs text-slate-400 uppercase tracking-wider block font-bold">
-              ΠΙΕΣΗ TURBO
+              ΠΙΕΣΗ (010B)
             </span>
-            <span className={`text-2xl sm:text-3xl font-black ${boostBar >= 1.0 ? 'text-red-400' : colorStyles.text}`}>
-              {boostBar >= 0 ? `+${boostBar.toFixed(2)}` : boostBar.toFixed(2)}
+            <span className={`text-2xl sm:text-3xl font-black ${boostBar !== null && boostBar >= 1.0 ? 'text-red-400' : colorStyles.text}`}>
+              {boostBar !== null ? (boostBar >= 0 ? `+${boostBar.toFixed(2)}` : boostBar.toFixed(2)) : 'N/A'}
             </span>
             <span className="text-[10px] text-slate-400 block font-bold">BAR</span>
           </div>
 
           <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-900">
             <span className="text-xs text-slate-400 uppercase tracking-wider block font-bold">
-              ΙΣΧΥΣ (BHP)
+              MAF (0110)
             </span>
             <span className={`text-2xl sm:text-3xl font-black ${colorStyles.text}`}>
-              ~{calculatedHp}
+              {mafGramsPerSec !== null ? mafGramsPerSec.toFixed(1) : 'N/A'}
             </span>
-            <span className="text-[10px] text-slate-400 block font-bold">HP</span>
+            <span className="text-[10px] text-slate-400 block font-bold">G/S</span>
           </div>
 
           <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-900">
@@ -171,7 +172,7 @@ export const HudDisplay: React.FC<Props> = ({ telemetry, onClose }) => {
               ΨΥΚΤΙΚΟ / IAT
             </span>
             <span className={`text-2xl sm:text-3xl font-black ${colorStyles.text}`}>
-              {coolantTemp}° / {iat}°
+              {coolantTemp !== null ? `${coolantTemp}°` : 'N/A'} / {iat !== null ? `${iat}°` : 'N/A'}
             </span>
             <span className="text-[10px] text-slate-400 block font-bold">°C</span>
           </div>

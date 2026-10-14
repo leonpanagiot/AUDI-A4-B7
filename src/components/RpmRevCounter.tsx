@@ -2,8 +2,8 @@ import React from 'react';
 import { Zap } from 'lucide-react';
 
 interface Props {
-  rpm: number;
-  speed: number;
+  rpm: number | null;
+  speed: number | null;
   size?: number;
 }
 
@@ -19,11 +19,12 @@ export const RpmRevCounter: React.FC<Props> = ({ rpm, speed, size = 280 }) => {
     return minAngle + fraction * (maxAngle - minAngle);
   };
 
-  const currentAngle = rpmToAngle(rpm);
-  const isShiftWarning = rpm >= 6400;
+  const currentAngle = rpmToAngle(rpm ?? 0);
+  const isShiftWarning = rpm !== null && rpm >= 6400;
 
   // Estimate gear based on speed & rpm (Audi 1.8T BFB 5/6-speed manual ratios)
   const getGear = () => {
+    if (speed === null || rpm === null) return 'N/A';
     if (speed < 3 || rpm < 700) return 'N';
     const ratio = (speed / rpm) * 1000;
     if (ratio < 11) return '1';
@@ -234,7 +235,7 @@ export const RpmRevCounter: React.FC<Props> = ({ rpm, speed, size = 280 }) => {
               textAnchor="middle"
               className={isShiftWarning ? 'animate-pulse' : ''}
             >
-              {rpm}
+              {rpm !== null ? rpm : 'N/A'}
             </text>
             <text
               x="0"
@@ -246,7 +247,7 @@ export const RpmRevCounter: React.FC<Props> = ({ rpm, speed, size = 280 }) => {
               letterSpacing="2"
               textAnchor="middle"
             >
-              RPM • {speed} KM/H
+              RPM • {speed !== null ? `${speed} KM/H` : 'N/A KM/H'}
             </text>
           </g>
         </svg>

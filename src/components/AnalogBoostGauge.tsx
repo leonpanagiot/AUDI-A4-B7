@@ -2,9 +2,9 @@ import React from 'react';
 import { RotateCcw } from 'lucide-react';
 
 interface Props {
-  boostBar: number;
-  boostPsi: number;
-  peakBoostBar: number;
+  boostBar: number | null;
+  boostPsi: number | null;
+  peakBoostBar: number | null;
   onResetPeak: () => void;
   size?: number;
 }
@@ -30,8 +30,8 @@ export const AnalogBoostGauge: React.FC<Props> = ({
     return minAngle + fraction * (maxAngle - minAngle);
   };
 
-  const currentAngle = valueToAngle(boostBar);
-  const peakAngle = valueToAngle(peakBoostBar);
+  const currentAngle = boostBar !== null ? valueToAngle(boostBar) : valueToAngle(0);
+  const peakAngle = peakBoostBar !== null ? valueToAngle(peakBoostBar) : valueToAngle(0);
 
   // Generate tick marks
   const ticks = [
@@ -270,14 +270,14 @@ export const AnalogBoostGauge: React.FC<Props> = ({
             <text
               x="0"
               y="0"
-              fill={boostBar >= 1.2 ? '#ef4444' : boostBar > 0 ? '#38bdf8' : '#94a3b8'}
+              fill={boostBar !== null ? (boostBar >= 1.2 ? '#ef4444' : boostBar > 0 ? '#38bdf8' : '#94a3b8') : '#94a3b8'}
               fontFamily="Orbitron, sans-serif"
               fontWeight="900"
               fontSize="24"
               letterSpacing="1"
               textAnchor="middle"
             >
-              {boostBar >= 0 ? `+${boostBar.toFixed(2)}` : boostBar.toFixed(2)}
+              {boostBar !== null ? (boostBar >= 0 ? `+${boostBar.toFixed(2)}` : boostBar.toFixed(2)) : 'N/A'}
             </text>
             <text
               x="0"
@@ -289,7 +289,7 @@ export const AnalogBoostGauge: React.FC<Props> = ({
               letterSpacing="2"
               textAnchor="middle"
             >
-              BAR • {boostPsi >= 0 ? `+${boostPsi.toFixed(1)}` : boostPsi.toFixed(1)} PSI
+              {boostPsi !== null ? `BAR • ${boostPsi >= 0 ? `+${boostPsi.toFixed(1)}` : boostPsi.toFixed(1)} PSI` : 'PID 010B: N/A'}
             </text>
           </g>
         </svg>
@@ -297,7 +297,9 @@ export const AnalogBoostGauge: React.FC<Props> = ({
         {/* Peak memory badge & reset button */}
         <div className="absolute top-2 right-2 flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 rounded-md px-2 py-1 text-[11px] font-mono shadow-md">
           <span className="text-amber-400 font-bold">PEAK:</span>
-          <span className="text-white font-bold">+{peakBoostBar.toFixed(2)}</span>
+          <span className="text-white font-bold">
+            {peakBoostBar !== null ? `${peakBoostBar >= 0 ? '+' : ''}${peakBoostBar.toFixed(2)}` : 'N/A'}
+          </span>
           <span className="text-slate-400 text-[10px]">BAR</span>
           <button
             onClick={onResetPeak}

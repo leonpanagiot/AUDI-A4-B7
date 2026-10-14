@@ -274,20 +274,20 @@ public class MainActivity extends AppCompatActivity {
 
         private void initElm327() {
             try {
-                Thread.sleep(200);
+                Thread.sleep(180);
                 executeRaw("ATZ");
-                Thread.sleep(400);
+                Thread.sleep(350);
                 executeRaw("ATE0"); // Echo off
                 executeRaw("ATL0"); // Linefeeds off
-                executeRaw("ATS1"); // Spaces on
+                executeRaw("ATS1"); // Spaces on for reliable framing
                 executeRaw("ATH0"); // Headers off
                 executeRaw("ATAT1"); // Safe adaptive timing for K-Line init
                 executeRaw("ATST 64"); // 400ms timeout during 5-baud K-Line init
                 executeRaw("ATSP0"); // Auto protocol search
                 executeRaw("0100"); // ECU wake up & protocol lock (waits full K-Line init)
-                // Now that K-Line is locked, switch to fast adaptive timing so PIDs respond in ~90-140ms
+                // Switch to ATAT2 + ATST 19 (100ms), verified by obdService.ts
                 executeRaw("ATAT2");
-                executeRaw("ATST 19"); // 100ms timeout for fast NO DATA recovery
+                executeRaw("ATST 19");
             } catch (Exception ignored) {}
         }
 
@@ -315,7 +315,7 @@ public class MainActivity extends AppCompatActivity {
 
                 StringBuilder sb = new StringBuilder();
                 long startTime = System.currentTimeMillis();
-                long maxWait = (cleanCmd.equals("0100") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 4200 : 900;
+                long maxWait = (cleanCmd.startsWith("0100") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 4200 : 650;
                 byte[] buffer = new byte[128];
 
                 while (System.currentTimeMillis() - startTime < maxWait) {
@@ -333,7 +333,7 @@ public class MainActivity extends AppCompatActivity {
                             }
                         }
                     } else {
-                        Thread.sleep(3);
+                        Thread.sleep(1);
                     }
                 }
 

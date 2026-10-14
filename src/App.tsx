@@ -136,21 +136,27 @@ export default function App() {
               <>
                 <div className="flex items-center gap-1.5">
                   <span className="text-slate-400">ΠΙΕΣΗ:</span>
-                  <span className={`font-bold ${telemetry.boostBar >= 1.0 ? 'text-red-400' : 'text-white'}`}>
-                    {telemetry.boostBar >= 0 ? `+${telemetry.boostBar.toFixed(2)}` : telemetry.boostBar.toFixed(2)} bar
+                  <span className={`font-bold ${telemetry.boostBar !== null && telemetry.boostBar >= 1.0 ? 'text-red-400' : 'text-white'}`}>
+                    {telemetry.boostBar !== null
+                      ? `${telemetry.boostBar >= 0 ? `+${telemetry.boostBar.toFixed(2)}` : telemetry.boostBar.toFixed(2)} bar`
+                      : 'N/A'}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-slate-400">RPM:</span>
-                  <span className="font-bold text-white">{telemetry.rpm}</span>
+                  <span className="font-bold text-white">{telemetry.rpm !== null ? telemetry.rpm : 'N/A'}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-slate-400">MAF:</span>
-                  <span className="font-bold text-blue-400">{telemetry.mafGramsPerSec.toFixed(1)} g/s</span>
+                  <span className="font-bold text-blue-400">
+                    {telemetry.mafGramsPerSec !== null ? `${telemetry.mafGramsPerSec.toFixed(1)} g/s` : 'N/A'}
+                  </span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-slate-400">BHP:</span>
-                  <span className="font-bold text-amber-400">~{telemetry.calculatedHp}</span>
+                  <span className="font-bold text-amber-400">
+                    {telemetry.calculatedHp !== null ? `${telemetry.calculatedHp} HP` : 'N/A'}
+                  </span>
                 </div>
               </>
             )}

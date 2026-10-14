@@ -81,11 +81,7 @@ export const DynoPowerGraph: React.FC<Props> = ({ telemetry, currentStage }) => 
   const torquePath = curve.map((p, i) => `${i === 0 ? 'M' : 'L'} ${getX(p.rpm)} ${getYTorque(p.torque)}`).join(' ');
   const stockHpPath = stockCurve.map((p, i) => `${i === 0 ? 'M' : 'L'} ${getX(p.rpm)} ${getYHp(p.hp)}`).join(' ');
 
-  const currentX = getX(Math.max(minRpm, Math.min(maxRpm, rpm)));
-
-  const handleRunDyno = () => {
-    obdEngine.setSimPreset('dyno');
-  };
+  const currentX = rpm !== null ? getX(Math.max(minRpm, Math.min(maxRpm, rpm))) : null;
 
   return (
     <div className="space-y-4">
@@ -102,24 +98,20 @@ export const DynoPowerGraph: React.FC<Props> = ({ telemetry, currentStage }) => 
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Καμπύλες Ιπποδύναμης (BHP) και Ροπής (Nm) σε σχέση με τις στροφές κινητήρα (RPM).
+            Καμπύλες Ιπποδύναμης (BHP) και Ροπής (Nm) σε σχέση με τις πραγματικές στροφές κινητήρα (RPM).
           </p>
         </div>
 
         <div className="flex items-center gap-3">
           <div className="text-right font-mono">
-            <span className="text-[10px] text-slate-400 block font-sans">Ζωντανή Ισχύς</span>
-            <span className="text-lg font-black text-red-400">~{calculatedHp} BHP</span>
-            <span className="text-xs text-slate-400 ml-1.5 font-bold">({calculatedTorque} Nm)</span>
+            <span className="text-[10px] text-slate-400 block font-sans">Ζωντανή Ισχύς / Ροπή ECU</span>
+            <span className="text-lg font-black text-red-400">
+              {calculatedHp !== null ? `${calculatedHp} BHP` : 'N/A'}
+            </span>
+            <span className="text-xs text-slate-400 ml-1.5 font-bold">
+              ({calculatedTorque !== null ? `${calculatedTorque} Nm` : 'N/A'})
+            </span>
           </div>
-
-          <button
-            onClick={handleRunDyno}
-            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold uppercase tracking-wider transition active:scale-95 cursor-pointer shadow-md shadow-red-600/30"
-          >
-            <Play className="w-4 h-4 fill-current" />
-            <span>Dyno Run</span>
-          </button>
         </div>
       </div>
 
@@ -145,7 +137,7 @@ export const DynoPowerGraph: React.FC<Props> = ({ telemetry, currentStage }) => 
           </div>
 
           <span className="text-slate-400 text-[11px] font-sans">
-            Στροφές: <strong className="text-white font-mono">{rpm} RPM</strong>
+            Στροφές: <strong className="text-white font-mono">{rpm !== null ? `${rpm} RPM` : 'N/A'}</strong>
           </span>
         </div>
 
@@ -248,30 +240,36 @@ export const DynoPowerGraph: React.FC<Props> = ({ telemetry, currentStage }) => 
             />
 
             {/* Current RPM Cursor Line */}
-            <line
-              x1={currentX}
-              y1={padding.top}
-              x2={currentX}
-              y2={padding.top + graphHeight}
-              stroke="#f59e0b"
-              strokeWidth="2"
-            />
-            <circle
-              cx={currentX}
-              cy={getYHp(calculatedHp)}
-              r="6"
-              fill="#ef4444"
-              stroke="#ffffff"
-              strokeWidth="2"
-            />
-            <circle
-              cx={currentX}
-              cy={getYTorque(calculatedTorque)}
-              r="5"
-              fill="#3b82f6"
-              stroke="#ffffff"
-              strokeWidth="2"
-            />
+            {currentX !== null && (
+              <line
+                x1={currentX}
+                y1={padding.top}
+                x2={currentX}
+                y2={padding.top + graphHeight}
+                stroke="#f59e0b"
+                strokeWidth="2"
+              />
+            )}
+            {currentX !== null && calculatedHp !== null && (
+              <circle
+                cx={currentX}
+                cy={getYHp(calculatedHp)}
+                r="6"
+                fill="#ef4444"
+                stroke="#ffffff"
+                strokeWidth="2"
+              />
+            )}
+            {currentX !== null && calculatedTorque !== null && (
+              <circle
+                cx={currentX}
+                cy={getYTorque(calculatedTorque)}
+                r="5"
+                fill="#3b82f6"
+                stroke="#ffffff"
+                strokeWidth="2"
+              />
+            )}
           </svg>
         </div>
 

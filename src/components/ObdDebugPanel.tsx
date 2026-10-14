@@ -73,7 +73,7 @@ export const ObdDebugPanel: React.FC = () => {
     const pidLines = (Object.values(debug.pidTable) as PidDebugEntry[])
       .map(
         (p) =>
-          `${p.pid} (${p.name}): Raw="${p.rawResponse}" | Parsed="${p.parsedValue}" | Status=${p.status} | OK=${p.successCount}/Fail=${p.failCount} | ${p.latencyMs}ms`
+          `${p.pid} (${p.name}): Raw="${p.rawResponse}" | Parsed="${p.parsedValue}" | Status=${p.status} | OK=${p.successCount}/Fail=${p.failCount} | Latency=${p.latencyMs}ms | RefreshInterval=${p.refreshIntervalMs}ms`
       )
       .join('\n');
 
@@ -88,10 +88,14 @@ Device: ${debug.deviceName} (${debug.deviceAddress})
 ELM327 Version: ${debug.elmVersion}
 Protocol: ${debug.protocolName} (${debug.protocolNum})
 ECU Locked: ${debug.ecuLocked ? 'YES' : 'NO'}
+K-Line Timing: ${debug.kLineTimingConfig} (Dropped Frames: ${debug.kLineDroppedFrames})
 Supported PIDs (0100): ${debug.supportedPids0120}
 Supported PIDs (0120): ${debug.supportedPids2140}
 Supported PIDs (0140): ${debug.supportedPids4160}
-Stats: Sent=${debug.totalCommandsSent}, Valid=${debug.totalValidResponses}, Errors=${debug.totalErrors}, Cycle=${debug.loopCycleMs}ms
+Oil Temp PID 015C: ${debug.oilTempPid015CSupported}
+Active Supported Sensors: ${debug.supportedSensorsCount}
+Full Cycle Time: ${debug.loopCycleMs}ms | Avg Command: ${debug.avgCommandMs}ms (${debug.commandsPerSecHz} cmds/sec)
+Stats: Sent=${debug.totalCommandsSent}, Valid=${debug.totalValidResponses}, Errors=${debug.totalErrors}
 Last Error: ${debug.lastError}
 
 --- SENSOR PID TABLE ---
@@ -121,10 +125,10 @@ ${recentLogs}
               </div>
               <div>
                 <h2 className="text-base sm:text-lg font-black text-white uppercase tracking-wider font-mono">
-                  Κονσόλα Debug OBD-II &amp; Ελέγχου Αισθητήρων (ME7.5)
+                  Κονσόλα Debug OBD-II &amp; Πραγματικών Μετρήσεων (ME7.5)
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Ζωντανή παρακολούθηση εντολών TX/RX, απαντήσεων Hex από το ELM327, πρωτοκόλλου K-Line/CAN και χρόνων απόκρισης.
+                  Πραγματικές απαντήσεις Hex χωρίς υπολογισμένες/ψεύτικες τιμές, έλεγχος K-Line ATAT2/ATST 19, PID 015C και μέτρηση πλήρους κύκλου.
                 </p>
               </div>
             </div>
@@ -137,7 +141,7 @@ ${recentLogs}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-md shadow-blue-600/20"
             >
               <RefreshCw className={`w-4 h-4 ${isRunningSweep ? 'animate-spin' : ''}`} />
-              <span>{isRunningSweep ? 'Έλεγχος σε εξέλιξη...' : 'Πλήρες Τεστ Αισθητήρων'}</span>
+              <span>{isRunningSweep ? 'Έλεγχος σε εξέλιξη...' : 'Επανέλεγχος Υποστήριξης PIDs'}</span>
             </button>
 
             <button
@@ -166,68 +170,59 @@ ${recentLogs}
           <div className="bg-slate-950/80 border border-slate-800/90 rounded-xl p-3 space-y-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
               <Cpu className="w-3.5 h-3.5 text-purple-400" />
-              Chip ELM327 &amp; Πρωτόκολλο
+              Πρωτόκολλο &amp; Χρονισμός K-Line
             </span>
             <div className="text-xs font-bold text-white font-mono truncate">
-              Chip: <span className="text-purple-300">{debug.elmVersion}</span>
-            </div>
-            <div className="text-[11px] font-mono text-slate-300 truncate">
               Proto: <span className="text-emerald-400">{debug.protocolName}</span> ({debug.protocolNum})
+            </div>
+            <div className="text-[10px] font-mono text-purple-300 truncate">
+              {debug.kLineTimingConfig} • Drops: {debug.kLineDroppedFrames}
             </div>
           </div>
 
           <div className="bg-slate-950/80 border border-slate-800/90 rounded-xl p-3 space-y-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              Κατάσταση Επικοινωνίας ECU
+              Bitmasks &amp; Θερμ. Λαδιού (015C)
             </span>
-            <div className="flex items-center gap-2">
-              <span
-                className={`px-2 py-0.5 rounded text-xs font-bold font-mono ${
-                  debug.ecuLocked
-                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                }`}
-              >
-                {debug.ecuLocked ? 'ECU LOCKED (OK)' : 'ECU NOT LOCKED'}
-              </span>
-            </div>
-            <div className="text-[10px] font-mono text-slate-400 truncate">
+            <div className="text-[10px] font-mono text-slate-300 truncate">
               0100: {debug.supportedPids0120}
+            </div>
+            <div className="text-[10px] font-mono text-amber-300 truncate">
+              PID 015C (Oil Temp): {debug.oilTempPid015CSupported}
             </div>
           </div>
 
           <div className="bg-slate-950/80 border border-slate-800/90 rounded-xl p-3 space-y-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
               <Activity className="w-3.5 h-3.5 text-amber-400" />
-              Στατιστικά Πακέτων &amp; Ταχύτητα
+              Μέτρηση Πλήρους Κύκλου &amp; Ρυθμού
             </span>
-            <div className="text-xs font-mono text-white flex items-center gap-3">
-              <span>TX: <strong>{debug.totalCommandsSent}</strong></span>
-              <span className="text-emerald-400">OK: <strong>{debug.totalValidResponses}</strong></span>
-              <span className="text-red-400">ERR: <strong>{debug.totalErrors}</strong></span>
+            <div className="text-xs font-mono text-white flex items-center gap-2">
+              <span>Πλήρης Κύκλος ({debug.supportedSensorsCount} PIDs):</span>
+              <strong className="text-emerald-400">{debug.loopCycleMs} ms</strong>
             </div>
-            <div className="text-[11px] font-mono text-slate-400 flex items-center gap-1">
+            <div className="text-[10px] font-mono text-slate-400 flex items-center gap-2">
               <Clock className="w-3 h-3 text-slate-500" />
-              <span>Κύκλος: {debug.loopCycleMs} ms</span>
+              <span>Μ.Ο. Εντολής: {debug.avgCommandMs} ms ({debug.commandsPerSecHz} cmd/s)</span>
             </div>
           </div>
         </div>
 
-        {/* Manual Protocol Override Bar (Crucial for Audi A4 B7 K-Line vs CAN clones) */}
+        {/* Manual Protocol Override Bar */}
         <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div className="text-xs text-slate-300">
             <strong className="text-white">Χειροκίνητο Κλείδωμα Πρωτοκόλλου VAG:</strong>{' '}
             <span className="text-slate-400">
-              Αν το αυτόματο (`ATSP0`) αργεί ή επιστρέφει `NO DATA`, επιλέξτε απευθείας το πρωτόκολλο του Audi A4 B7:
+              Επιλέξτε απευθείας το πρωτόκολλο του εγκεφάλου:
             </span>
           </div>
           <div className="flex items-center flex-wrap gap-1.5">
             {[
               { cmd: 'ATSP0', label: 'Auto (ATSP0)' },
+              { cmd: 'ATSP3', label: 'ISO 9141-2 K-Line (ATSP3)' },
               { cmd: 'ATSP5', label: 'KWP Fast (ATSP5 - ME7.5)' },
               { cmd: 'ATSP4', label: 'KWP 5-Baud (ATSP4)' },
-              { cmd: 'ATSP3', label: 'ISO 9141-2 K-Line (ATSP3)' },
               { cmd: 'ATSP6', label: 'CAN 500k (ATSP6)' },
             ].map((p) => (
               <button
@@ -245,13 +240,13 @@ ${recentLogs}
 
       {/* Live Sensor PID Raw Hex Table */}
       <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono flex items-center gap-2">
             <Zap className="w-4 h-4 text-amber-400" />
-            Ζωντανός Πίνακας Αισθητήρων OBD-II (Raw Hex Απαντήσεις &amp; Αποκωδικοποίηση)
+            Ζωντανός Πίνακας Αισθητήρων OBD-II (Πραγματικοί Χρόνοι Απόκρισης &amp; Refresh Interval)
           </h3>
           <span className="text-[11px] font-mono text-slate-400">
-            Πατήστε «Test» σε οποιονδήποτε αισθητήρα για άμεση ανάγνωση
+            Μη υποστηριζόμενα PIDs εμφανίζουν αυστηρά N/A και αφαιρούνται από τον κύκλο
           </span>
         </div>
 
@@ -262,10 +257,11 @@ ${recentLogs}
                 <th className="py-2 px-2.5">PID</th>
                 <th className="py-2 px-2.5 font-sans">Αισθητήρας</th>
                 <th className="py-2 px-2.5">Raw Απάντηση Dongle (Hex)</th>
-                <th className="py-2 px-2.5">Τιμή</th>
+                <th className="py-2 px-2.5">Πραγματική Τιμή</th>
                 <th className="py-2 px-2.5">Κατάσταση</th>
                 <th className="py-2 px-2.5">OK / Fail</th>
-                <th className="py-2 px-2.5">Χρόνος</th>
+                <th className="py-2 px-2.5">Latency Εντολής</th>
+                <th className="py-2 px-2.5">Refresh Interval</th>
                 <th className="py-2 px-2.5 text-right">Δοκιμή</th>
               </tr>
             </thead>
@@ -283,7 +279,7 @@ ${recentLogs}
                   <td className="py-2 px-2.5">
                     {row.status === 'ok' ? (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
-                        <CheckCircle2 className="w-3 h-3" /> OK
+                        <CheckCircle2 className="w-3 h-3" /> OK (Active)
                       </span>
                     ) : row.status === 'searching' ? (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold animate-pulse">
@@ -291,7 +287,7 @@ ${recentLogs}
                       </span>
                     ) : row.status === 'no_data' ? (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 text-[10px]">
-                        NO DATA (Fallback)
+                        NO DATA (N/A)
                       </span>
                     ) : row.status === 'error' ? (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 text-[10px] font-bold">
@@ -306,8 +302,11 @@ ${recentLogs}
                     <span className="text-slate-600"> / </span>
                     <span className="text-red-400">{row.failCount}</span>
                   </td>
-                  <td className="py-2 px-2.5 text-slate-400 text-[11px]">
+                  <td className="py-2 px-2.5 text-slate-300 text-[11px]">
                     {row.latencyMs > 0 ? `${row.latencyMs} ms` : '-'}
+                  </td>
+                  <td className="py-2 px-2.5 text-emerald-400 font-bold text-[11px]">
+                    {row.refreshIntervalMs > 0 ? `${row.refreshIntervalMs} ms` : '-'}
                   </td>
                   <td className="py-2 px-2.5 text-right">
                     <button
@@ -331,10 +330,10 @@ ${recentLogs}
           <div>
             <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono flex items-center gap-2">
               <Terminal className="w-4 h-4 text-emerald-400" />
-              Ζωντανό Τερματικό Εντολών ELM327 (Raw AT &amp; OBD-II Terminal)
+              Ζωντανό Τερματικό Εντολών ELM327 (Raw AT, OBD-II &amp; KWP2000 Terminal)
             </h3>
             <p className="text-xs text-slate-400">
-              Στείλτε απευθείας εντολές στο dongle (π.χ. <code className="text-emerald-400">ATRV</code>, <code className="text-emerald-400">ATDP</code>, <code className="text-emerald-400">0100</code>, <code className="text-emerald-400">010C</code>, <code className="text-emerald-400">0110</code>) για να δείτε τι απαντάει.
+              Στείλτε απευθείας εντολές στο dongle (π.χ. <code className="text-emerald-400">015C</code>, <code className="text-emerald-400">010C</code>, <code className="text-emerald-400">0110</code>, <code className="text-emerald-400">2101</code>, <code className="text-emerald-400">2173</code>).
             </p>
           </div>
 
@@ -349,7 +348,7 @@ ${recentLogs}
 
         {/* Quick Command Buttons */}
         <div className="flex items-center flex-wrap gap-1.5">
-          {['ATI', 'ATRV', 'ATDP', '0100', '010C', '0110', '0104', '0111', '0105', '010F', '0114', '0115', '0124', '0134', '03'].map((cmd) => (
+          {['ATI', 'ATRV', 'ATDP', '0100', '0120', '0140', '010C', '0110', '0104', '0111', '0105', '010F', '015C', '0115', '0124', '03'].map((cmd) => (
             <button
               key={cmd}
               onClick={() => handleQuickCmd(cmd)}
@@ -366,7 +365,7 @@ ${recentLogs}
             type="text"
             value={customCmd}
             onChange={(e) => setCustomCmd(e.target.value)}
-            placeholder="Πληκτρολογήστε εντολή AT ή PID (π.χ. ATRV, ATDP, 010C, 0110)..."
+            placeholder="Πληκτρολογήστε εντολή AT ή PID (π.χ. 015C, 010C, 0110, 2173)..."
             className="flex-1 px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:border-emerald-500 focus:outline-none"
           />
           <button
