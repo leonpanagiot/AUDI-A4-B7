@@ -75,7 +75,7 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
               {dtcs.length === 0 ? 'MIL OFF (ΚΑΘΑΡΟ - 0 ΒΛΑΒΕΣ)' : `MIL ON (${dtcs.length} ΒΛΑΒΕΣ)`}
             </span>
             <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
-              {mode === 'bluetooth' ? 'Bluetooth OBD-II' : mode === 'wifi' ? 'WiFi OBD-II' : mode === 'usb' ? 'USB KKL Cable' : 'Εξομοιωτής (Demo)'}
+              {mode === 'bluetooth' ? 'Bluetooth OBD-II' : mode === 'wifi' ? 'WiFi OBD-II' : mode === 'usb' ? 'USB KKL Cable' : mode === 'simulator' ? 'Εξομοιωτής (Demo)' : 'Αποσυνδεδεμένο'}
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">

@@ -159,12 +159,35 @@ export const BFB_COMMON_DTCS: DTCFault[] = [
   }
 ];
 
+export const ZERO_TELEMETRY: TelemetryData = {
+  rpm: 0,
+  speed: 0,
+  boostBar: 0.0,
+  boostPsi: 0.0,
+  peakBoostBar: 0.0,
+  coolantTemp: 0,
+  iat: 0,
+  oilTemp: 0,
+  oilPressure: 0.0,
+  mafGramsPerSec: 0.0,
+  calculatedHp: 0,
+  calculatedTorque: 0,
+  lambda: 1.0,
+  afr: 0.0,
+  ignitionTiming: 0.0,
+  knockRetard: [0, 0, 0, 0],
+  n75DutyCycle: 0,
+  batteryVoltage: 0.0,
+  throttlePosition: 0,
+  timestamp: 0
+};
+
 export class ObdEngine {
-  private mode: ConnectionMode = 'simulator';
+  private mode: ConnectionMode = 'disconnected';
   private listeners: ObdEventListener[] = [];
   private simInterval: any = null;
-  private obdPollingInterval: any = null;
   private isPolling = false;
+  private isPollingRunning = false;
 
   private currentThrottle = 0; // 0 to 100%
   private simPreset: 'idle' | 'city' | 'wot' | 'dyno' = 'idle';
@@ -178,29 +201,8 @@ export class ObdEngine {
   private currentStage: EngineStageId = 'stock';
   private currentOctane: FuelOctane = 100;
 
-  // Live telemetry state
-  private liveTelemetry: TelemetryData = {
-    rpm: 820,
-    speed: 0,
-    boostBar: -0.65,
-    boostPsi: -9.4,
-    peakBoostBar: 0,
-    coolantTemp: 90,
-    iat: 28,
-    oilTemp: 92,
-    oilPressure: 2.0,
-    mafGramsPerSec: 3.4,
-    calculatedHp: 163,
-    calculatedTorque: 225,
-    lambda: 1.0,
-    afr: 14.7,
-    ignitionTiming: 9.0,
-    knockRetard: [0, 0, 0, 0],
-    n75DutyCycle: 5,
-    batteryVoltage: 14.1,
-    throttlePosition: 0,
-    timestamp: Date.now()
-  };
+  // Live telemetry state - starts at clean ZERO when disconnected
+  private liveTelemetry: TelemetryData = { ...ZERO_TELEMETRY, timestamp: Date.now() };
 
   // Web Bluetooth members (for BLE dongles)
   private bluetoothDevice: any = null;
@@ -223,7 +225,28 @@ export class ObdEngine {
   };
 
   constructor() {
+    // By default, start DISCONNECTED with zero readings so user is not misled!
+    this.mode = 'disconnected';
+    this.liveTelemetry = { ...ZERO_TELEMETRY, timestamp: Date.now() };
+  }
+
+  public startSimulatorMode(): void {
+    this.stopRealObdPolling();
+    this.mode = 'simulator';
     this.startSimulator();
+    this.notifyStatus('Ενεργοποιήθηκε η λειτουργία εξομοίωσης (DEMO).', 'simulator');
+  }
+
+  public stopSimulatorMode(): void {
+    this.stopSimulator();
+    this.mode = 'disconnected';
+    this.liveTelemetry = { ...ZERO_TELEMETRY, timestamp: Date.now() };
+    this.notifyTelemetry(this.liveTelemetry);
+    this.notifyStatus('Αποσυνδεδεμένο • Συνδέστε το OBD-II dongle για ζωντανά δεδομένα.', 'disconnected');
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   public subscribe(listener: ObdEventListener): () => void {
@@ -302,46 +325,69 @@ export class ObdEngine {
   /**
    * Diagnostic Mode 03 & 07: Scan real ECU trouble codes
    */
+  /**
+   * Diagnostic Mode 03 & 07: Scan real ECU trouble codes
+   */
   public async scanRealDTCs(): Promise<DTCFault[]> {
+    if (this.mode === 'disconnected') {
+      this.notifyError('Απαιτείται σύνδεση με το αυτοκίνητο (Bluetooth ή WiFi OBD2) για ανάγνωση της μνήμης σφαλμάτων της ECU.');
+      return [];
+    }
+
     if (this.mode === 'simulator') {
-      // In simulator mode, if user scans, we do NOT inject fake faults unless explicitly asked
       return [...this.activeDTCs];
     }
 
     try {
       this.notifyStatus('Ανάγνωση μνήμης σφαλμάτων ECU (OBD Mode 03 - Stored DTCs)...', this.mode);
       const res03 = await this.sendObdCommand('03');
+      await this.sleep(40);
       const res07 = await this.sendObdCommand('07');
 
       const fullResp = `${res03} ${res07}`.toUpperCase();
-      const detectedCodes: string[] = [];
 
-      // Check if ECU reports no codes
-      if (fullResp.includes('43 00') || fullResp.includes('NO DATA') || fullResp.includes('UNABLE') || fullResp.includes('OK')) {
+      // Check if ECU reports no codes (Clean MIL OFF)
+      if (
+        fullResp.includes('NO DATA') ||
+        fullResp.includes('UNABLE') ||
+        fullResp.includes('43 00') ||
+        fullResp.includes('4300') ||
+        fullResp.includes('47 00') ||
+        fullResp.includes('4700') ||
+        fullResp.includes('OK') ||
+        fullResp.trim() === ''
+      ) {
         this.activeDTCs = [];
         this.notifyStatus('Ολοκληρώθηκε ο έλεγχος. Δεν βρέθηκαν κωδικοί σφάλματος στην ECU (MIL OFF - 0 Σφάλματα).', this.mode);
         return [];
       }
 
-      // Parse standard 2-byte DTC hex format (e.g. 43 01 02 02 99...)
-      const hexTokens = fullResp.replace(/[^0-9A-F ]/g, ' ').split(/\s+/).filter(t => t.length === 2);
-      for (let i = 0; i < hexTokens.length - 1; i += 2) {
-        const b1 = parseInt(hexTokens[i], 16);
-        const b2 = parseInt(hexTokens[i + 1], 16);
+      const detectedCodes: string[] = [];
 
-        if (b1 === 0 && b2 === 0) continue;
-        if (hexTokens[i] === '43' || hexTokens[i] === '47') continue;
+      // Robust 2-byte DTC extraction from 43 / 47 responses
+      const hexTokens = fullResp.replace(/[^0-9A-F]/g, ' ').trim().split(/\s+/).filter(t => t.length === 2);
+      for (let i = 0; i < hexTokens.length - 1; i++) {
+        if (hexTokens[i] === '43' || hexTokens[i] === '47') {
+          // Skip count byte if present
+          let startIdx = i + 2;
+          for (let j = startIdx; j < hexTokens.length - 1; j += 2) {
+            const b1 = parseInt(hexTokens[j], 16);
+            const b2 = parseInt(hexTokens[j + 1], 16);
+            if (b1 === 0 && b2 === 0) continue;
+            if (hexTokens[j] === '43' || hexTokens[j] === '47') break;
 
-        const typeDigit = (b1 >> 6) & 0x03;
-        const prefix = ['P', 'C', 'B', 'U'][typeDigit];
-        const d1 = (b1 >> 4) & 0x03;
-        const d2 = b1 & 0x0F;
-        const d3 = (b2 >> 4) & 0x0F;
-        const d4 = b2 & 0x0F;
+            const typeDigit = (b1 >> 6) & 0x03;
+            const prefix = ['P', 'C', 'B', 'U'][typeDigit];
+            const d1 = (b1 >> 4) & 0x03;
+            const d2 = b1 & 0x0F;
+            const d3 = (b2 >> 4) & 0x0F;
+            const d4 = b2 & 0x0F;
 
-        const codeStr = `${prefix}${d1}${d2.toString(16)}${d3.toString(16)}${d4.toString(16)}`.toUpperCase();
-        if (/^[PCBU][0-9A-F]{4}$/.test(codeStr) && codeStr !== 'P0000' && !detectedCodes.includes(codeStr)) {
-          detectedCodes.push(codeStr);
+            const codeStr = `${prefix}${d1}${d2.toString(16)}${d3.toString(16)}${d4.toString(16)}`.toUpperCase();
+            if (/^[PCBU][0-9A-F]{4}$/.test(codeStr) && codeStr !== 'P0000' && !detectedCodes.includes(codeStr)) {
+              detectedCodes.push(codeStr);
+            }
+          }
         }
       }
 
@@ -351,7 +397,7 @@ export class ObdEngine {
         if (known) return { ...known, status: 'Active' };
         return {
           code,
-          title: `ECU Fault Code ${code}`,
+          title: `Κωδικός Σφάλματος ECU ${code}`,
           description: `Diagnostic trouble code reported by Audi ME7.5 ECU: ${code}`,
           greekDescription: `Κωδικός βλάβης κινητήρα ${code} από την ECU. Ελέγξτε τις σχετικές σωληνώσεις/αισθητήρες.`,
           severity: code.startsWith('P03') ? 'critical' : 'medium',
@@ -426,7 +472,8 @@ export class ObdEngine {
             this.notifyStatus(`Σύνδεση με συζευγμένη συσκευή ${obd.name} (${obd.address})...`, 'connecting');
           } else {
             this.notifyError('Δεν βρέθηκε συζευγμένο OBD2 dongle. Κάντε σύζευξη στις ρυθμίσεις Bluetooth του κινητού.');
-            this.startSimulator();
+            this.mode = 'disconnected';
+            this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
             return false;
           }
         }
@@ -442,7 +489,8 @@ export class ObdEngine {
         }
       } catch (err: any) {
         this.notifyError(`Σφάλμα σύνδεσης: ${err.message || err}`);
-        this.startSimulator();
+        this.mode = 'disconnected';
+        this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
         return false;
       }
     }
@@ -489,9 +537,13 @@ export class ObdEngine {
 
         // Initialize ELM327 commands
         await this.sendObdCommand('ATZ');
+        await this.sleep(300);
         await this.sendObdCommand('ATE0');
         await this.sendObdCommand('ATL0');
+        await this.sendObdCommand('ATS1');
+        await this.sendObdCommand('ATH0');
         await this.sendObdCommand('ATSP0');
+        await this.sendObdCommand('0100');
 
         this.mode = 'bluetooth';
         this.notifyStatus(`Συνδέθηκε επιτυχώς μέσω Web Bluetooth με ${device.name || 'ELM327 BLE'}!`, 'bluetooth');
@@ -499,13 +551,15 @@ export class ObdEngine {
         return true;
       } catch (err: any) {
         this.notifyError(`Σφάλμα Web Bluetooth: ${err.message || 'Ακυρώθηκε'}`);
-        this.startSimulator();
+        this.mode = 'disconnected';
+        this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
         return false;
       }
     }
 
     this.notifyError('Το Web Bluetooth δεν υποστηρίζεται σε αυτόν τον browser. Χρησιμοποιήστε την εφαρμογή APK ή Google Chrome.');
-    this.startSimulator();
+    this.mode = 'disconnected';
+    this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
     return false;
   }
 
@@ -517,9 +571,10 @@ export class ObdEngine {
     if (this.gattServer && this.gattServer.connected) {
       this.gattServer.disconnect();
     }
-    this.mode = 'simulator';
-    this.notifyStatus('Αποσυνδέθηκε. Επιστροφή στον εξομοιωτή Audi BFB.', 'simulator');
-    this.startSimulator();
+    this.mode = 'disconnected';
+    this.liveTelemetry = { ...ZERO_TELEMETRY, timestamp: Date.now() };
+    this.notifyTelemetry(this.liveTelemetry);
+    this.notifyStatus('Αποσυνδέθηκε επιτυχώς από το Bluetooth OBD2.', 'disconnected');
   }
 
   // WiFi OBD-II Methods
@@ -552,16 +607,17 @@ export class ObdEngine {
         }
       } catch (e: any) {
         this.notifyError(`Σφάλμα WiFi OBD: ${e.message}`);
-        this.startSimulator();
+        this.mode = 'disconnected';
+        this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
         return false;
       }
     }
 
-    // Web fallback notification
-    this.mode = 'wifi';
-    this.notifyStatus(`Συνδέθηκε μέσω WiFi OBD-II (ELM327 @ ${this.wifiConfig.ip}:${this.wifiConfig.port})!`, 'wifi');
-    this.startRealObdPolling();
-    return true;
+    // Web notification
+    this.notifyError('Η σύνδεση WiFi OBD μέσω browser απαιτεί την εγκατεστημένη εφαρμογή Android APK για άμεση πρόσβαση TCP Socket.');
+    this.mode = 'disconnected';
+    this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
+    return false;
   }
 
   public disconnectWifi(): void {
@@ -569,9 +625,10 @@ export class ObdEngine {
     if (this.isNativeAndroid() && window.AndroidOBD) {
       window.AndroidOBD.disconnect();
     }
-    this.mode = 'simulator';
-    this.notifyStatus('Αποσύνδεση WiFi OBD-II. Επιστροφή στον εξομοιωτή Audi BFB.', 'simulator');
-    this.startSimulator();
+    this.mode = 'disconnected';
+    this.liveTelemetry = { ...ZERO_TELEMETRY, timestamp: Date.now() };
+    this.notifyTelemetry(this.liveTelemetry);
+    this.notifyStatus('Αποσύνδεση WiFi OBD-II.', 'disconnected');
   }
 
   /**
@@ -599,7 +656,8 @@ export class ObdEngine {
       return true;
     } catch (err: any) {
       this.notifyError(`Σφάλμα σύνδεσης USB: ${err.message || 'Ακυρώθηκε'}`);
-      this.startSimulator();
+      this.mode = 'disconnected';
+      this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
       return false;
     }
   }
@@ -634,45 +692,48 @@ export class ObdEngine {
       }
     }
 
-    // In simulator return empty
     return '';
   }
 
   /**
    * Real OBD-II Continuous Telemetry Polling Loop
-   * Queries standard OBD-II Mode 01 PIDs from Audi ME7.5 ECU:
+   * Sequential async cycle that queries standard OBD-II Mode 01 PIDs:
    * - 010C: Engine RPM
-   * - 010D: Vehicle Speed (km/h)
    * - 010B: Manifold Absolute Pressure (MAP in kPa -> Turbo Boost)
-   * - 0105: Coolant Temp (°C)
-   * - 010F: Intake Air Temp IAT (°C)
+   * - 010D: Vehicle Speed (km/h)
    * - 0110: Mass Air Flow MAF (g/s)
    * - 0111: Throttle Position (%)
+   * - 0105: Coolant Temp (°C)
+   * - 010F: Intake Air Temp IAT (°C)
    * - 010E: Timing Advance (deg)
-   * - 0142: Battery Voltage (V)
+   * - ATRV: Battery Voltage (V)
    */
   private startRealObdPolling(): void {
-    if (this.obdPollingInterval) return;
+    if (this.isPollingRunning) return;
     this.isPolling = true;
+    this.runSequentialPollingLoop();
+  }
 
+  private async runSequentialPollingLoop(): Promise<void> {
+    if (this.isPollingRunning) return;
+    this.isPollingRunning = true;
     let cycle = 0;
 
-    this.obdPollingInterval = setInterval(async () => {
-      if (this.mode === 'simulator' || !this.isPolling) return;
-
+    while (this.isPolling && (this.mode === 'bluetooth' || this.mode === 'wifi' || this.mode === 'usb')) {
       try {
         cycle = (cycle + 1) % 4;
 
-        // Core high-frequency PID: Engine RPM (010C)
+        // 1. Core high-frequency PID: Engine RPM (010C)
         const rpmResp = await this.sendObdCommand('010C');
         const parsedRpm = this.parseRpm(rpmResp);
         if (parsedRpm !== null) {
           this.liveTelemetry.rpm = parsedRpm;
         }
+        await this.sleep(35);
 
-        // Manifold Absolute Pressure (010B) -> Boost
+        // 2. Manifold Absolute Pressure (010B) -> Boost
         const mapResp = await this.sendObdCommand('010B');
-        const parsedMap = this.parseSingleByte(mapResp);
+        const parsedMap = this.parseMap(mapResp);
         if (parsedMap !== null) {
           // MAP in kPa: 101.3 kPa = atmospheric (0 bar boost)
           const boostBar = Math.round(((parsedMap - 101.3) / 100) * 100) / 100;
@@ -683,15 +744,17 @@ export class ObdEngine {
             this.liveTelemetry.peakBoostBar = boostBar;
           }
         }
+        await this.sleep(35);
 
-        // Vehicle Speed (010D)
+        // 3. Vehicle Speed (010D)
         const speedResp = await this.sendObdCommand('010D');
-        const parsedSpeed = this.parseSingleByte(speedResp);
+        const parsedSpeed = this.parseSpeed(speedResp);
         if (parsedSpeed !== null) {
           this.liveTelemetry.speed = parsedSpeed;
         }
+        await this.sleep(35);
 
-        // Interleaved sensor cycles
+        // 4. Interleaved sensor cycles
         if (cycle === 1) {
           // MAF (0110)
           const mafResp = await this.sendObdCommand('0110');
@@ -703,94 +766,157 @@ export class ObdEngine {
               this.liveTelemetry.calculatedTorque = Math.round((this.liveTelemetry.calculatedHp * 7120) / this.liveTelemetry.rpm);
             }
           }
+          await this.sleep(35);
 
           // Throttle (0111)
           const thrResp = await this.sendObdCommand('0111');
-          const parsedThr = this.parseSingleByte(thrResp);
+          const parsedThr = this.parseThrottle(thrResp);
           if (parsedThr !== null) {
-            this.liveTelemetry.throttlePosition = Math.round((parsedThr * 100) / 255);
+            this.liveTelemetry.throttlePosition = parsedThr;
           }
         } else if (cycle === 2) {
           // Coolant Temp (0105)
           const coolResp = await this.sendObdCommand('0105');
-          const parsedCool = this.parseSingleByte(coolResp);
+          const parsedCool = this.parseCoolant(coolResp);
           if (parsedCool !== null) {
-            this.liveTelemetry.coolantTemp = parsedCool - 40;
+            this.liveTelemetry.coolantTemp = parsedCool;
           }
+          await this.sleep(35);
 
           // Intake Air Temp IAT (010F)
           const iatResp = await this.sendObdCommand('010F');
-          const parsedIat = this.parseSingleByte(iatResp);
+          const parsedIat = this.parseIat(iatResp);
           if (parsedIat !== null) {
-            this.liveTelemetry.iat = parsedIat - 40;
+            this.liveTelemetry.iat = parsedIat;
           }
         } else if (cycle === 3) {
           // Timing Advance (010E)
           const timResp = await this.sendObdCommand('010E');
-          const parsedTim = this.parseSingleByte(timResp);
+          const parsedTim = this.parseTiming(timResp);
           if (parsedTim !== null) {
-            this.liveTelemetry.ignitionTiming = Math.round(((parsedTim / 2) - 64) * 10) / 10;
+            this.liveTelemetry.ignitionTiming = parsedTim;
           }
+          await this.sleep(35);
 
           // Battery Voltage (AT RV or 0142)
           const voltResp = await this.sendObdCommand('ATRV');
-          const vMatch = voltResp.match(/(\d+\.?\d*)\s*V/i);
-          if (vMatch) {
-            this.liveTelemetry.batteryVoltage = parseFloat(vMatch[1]);
+          const parsedVolt = this.parseVoltage(voltResp);
+          if (parsedVolt !== null) {
+            this.liveTelemetry.batteryVoltage = parsedVolt;
           }
         }
 
         this.liveTelemetry.timestamp = Date.now();
         this.notifyTelemetry({ ...this.liveTelemetry });
-
-        // Update audio engine
         audioEngine.update(this.liveTelemetry.rpm, this.liveTelemetry.boostBar, this.liveTelemetry.throttlePosition);
+
+        // Guard delay between full poll iterations
+        await this.sleep(40);
       } catch (e) {
-        // Continue polling loop
+        await this.sleep(150);
       }
-    }, 150);
+    }
+
+    this.isPollingRunning = false;
   }
 
   private stopRealObdPolling(): void {
     this.isPolling = false;
-    if (this.obdPollingInterval) {
-      clearInterval(this.obdPollingInterval);
-      this.obdPollingInterval = null;
-    }
   }
 
+  // --- Robust Hex & PID Parsers (handles spaces, compact hex, CAN headers) ---
+
   private parseRpm(resp: string): number | null {
-    const bytes = this.extractHexBytes(resp, '41', '0C');
-    if (bytes && bytes.length >= 2) {
-      return Math.round(((bytes[0] * 256) + bytes[1]) / 4);
+    // Matches 41 0C 0F A0 or 410C0FA0 or 7E8 04 41 0C 0F A0
+    const m = resp.match(/41\s*0C\s*([0-9A-F]{2})\s*([0-9A-F]{2})/i);
+    if (m) {
+      const a = parseInt(m[1], 16);
+      const b = parseInt(m[2], 16);
+      if (!isNaN(a) && !isNaN(b)) {
+        return Math.round(((a * 256) + b) / 4);
+      }
+    }
+    return null;
+  }
+
+  private parseMap(resp: string): number | null {
+    // Matches 41 0B 64 or 410B64 or 7E8 03 41 0B 64
+    const m = resp.match(/41\s*0B\s*([0-9A-F]{2})/i);
+    if (m) {
+      const val = parseInt(m[1], 16);
+      if (!isNaN(val)) return val;
+    }
+    return null;
+  }
+
+  private parseSpeed(resp: string): number | null {
+    // Matches 41 0D 32 or 410D32
+    const m = resp.match(/41\s*0D\s*([0-9A-F]{2})/i);
+    if (m) {
+      const val = parseInt(m[1], 16);
+      if (!isNaN(val)) return val;
     }
     return null;
   }
 
   private parseMaf(resp: string): number | null {
-    const bytes = this.extractHexBytes(resp, '41', '10');
-    if (bytes && bytes.length >= 2) {
-      return Math.round((((bytes[0] * 256) + bytes[1]) / 100) * 10) / 10;
-    }
-    return null;
-  }
-
-  private parseSingleByte(resp: string): number | null {
-    const tokens = resp.replace(/[^0-9A-F ]/gi, ' ').trim().split(/\s+/);
-    if (tokens.length >= 3 && tokens[0] === '41') {
-      const val = parseInt(tokens[2], 16);
-      return isNaN(val) ? null : val;
-    }
-    return null;
-  }
-
-  private extractHexBytes(resp: string, mode: string, pid: string): number[] | null {
-    const clean = resp.replace(/[^0-9A-F ]/gi, ' ').trim().split(/\s+/);
-    for (let i = 0; i < clean.length - 2; i++) {
-      if (clean[i].toUpperCase() === mode && clean[i + 1].toUpperCase() === pid) {
-        const remaining = clean.slice(i + 2).map(h => parseInt(h, 16)).filter(n => !isNaN(n));
-        return remaining;
+    // Matches 41 10 03 E8 or 411003E8
+    const m = resp.match(/41\s*10\s*([0-9A-F]{2})\s*([0-9A-F]{2})/i);
+    if (m) {
+      const a = parseInt(m[1], 16);
+      const b = parseInt(m[2], 16);
+      if (!isNaN(a) && !isNaN(b)) {
+        return Math.round((((a * 256) + b) / 100) * 10) / 10;
       }
+    }
+    return null;
+  }
+
+  private parseThrottle(resp: string): number | null {
+    // Matches 41 11 32
+    const m = resp.match(/41\s*11\s*([0-9A-F]{2})/i);
+    if (m) {
+      const val = parseInt(m[1], 16);
+      if (!isNaN(val)) return Math.round((val * 100) / 255);
+    }
+    return null;
+  }
+
+  private parseCoolant(resp: string): number | null {
+    // Matches 41 05 82 (130 - 40 = 90)
+    const m = resp.match(/41\s*05\s*([0-9A-F]{2})/i);
+    if (m) {
+      const val = parseInt(m[1], 16);
+      if (!isNaN(val)) return val - 40;
+    }
+    return null;
+  }
+
+  private parseIat(resp: string): number | null {
+    // Matches 41 0F 44
+    const m = resp.match(/41\s*0F\s*([0-9A-F]{2})/i);
+    if (m) {
+      const val = parseInt(m[1], 16);
+      if (!isNaN(val)) return val - 40;
+    }
+    return null;
+  }
+
+  private parseTiming(resp: string): number | null {
+    // Matches 41 0E 80
+    const m = resp.match(/41\s*0E\s*([0-9A-F]{2})/i);
+    if (m) {
+      const val = parseInt(m[1], 16);
+      if (!isNaN(val)) return Math.round(((val / 2) - 64) * 10) / 10;
+    }
+    return null;
+  }
+
+  private parseVoltage(resp: string): number | null {
+    const m = resp.match(/([0-9]+\.?[0-9]*)\s*V/i);
+    if (m) {
+      const val = parseFloat(m[1]);
+      if (!isNaN(val)) return val;
     }
     return null;
   }

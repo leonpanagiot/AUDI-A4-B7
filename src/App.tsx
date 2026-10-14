@@ -16,7 +16,7 @@ import {
   Sparkles,
   Zap
 } from 'lucide-react';
-import { obdEngine, ConnectionMode, ENGINE_STAGES } from './services/obdService';
+import { obdEngine, ConnectionMode, ENGINE_STAGES, ZERO_TELEMETRY } from './services/obdService';
 import { TelemetryData, DTCFault, EngineStageId, FuelOctane } from './types/telemetry';
 import { AnalogBoostGauge } from './components/AnalogBoostGauge';
 import { RpmRevCounter } from './components/RpmRevCounter';
@@ -41,30 +41,12 @@ export default function App() {
   const [soundEnabled, setSoundEnabled] = useState(false);
 
   const [telemetry, setTelemetry] = useState<TelemetryData>({
-    rpm: 820,
-    speed: 0,
-    boostBar: -0.65,
-    boostPsi: -9.4,
-    peakBoostBar: 1.28,
-    coolantTemp: 90,
-    iat: 28,
-    oilTemp: 96,
-    oilPressure: 2.1,
-    mafGramsPerSec: 3.4,
-    calculatedHp: 163,
-    calculatedTorque: 225,
-    lambda: 1.0,
-    afr: 14.7,
-    ignitionTiming: 9.0,
-    knockRetard: [0, 0, 0, 0],
-    n75DutyCycle: 5,
-    batteryVoltage: 14.1,
-    throttlePosition: 0,
+    ...ZERO_TELEMETRY,
     timestamp: Date.now()
   });
 
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('simulator');
-  const [statusMessage, setStatusMessage] = useState<string>('Ετοιμότητα συστήματος Audi 1.8T BFB ECU (ME7.5)');
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('disconnected');
+  const [statusMessage, setStatusMessage] = useState<string>('Αποσυνδεδεμένο • Συνδέστε το OBD-II dongle (Bluetooth / WiFi) για ανάγνωση ζωντανών δεδομένων');
   const [activeDTCs, setActiveDTCs] = useState<DTCFault[]>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -158,24 +140,38 @@ export default function App() {
 
           {/* Quick HUD Metrics in Header */}
           <div className="hidden lg:flex items-center gap-5 font-mono text-xs text-slate-300">
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-400">ΠΙΕΣΗ:</span>
-              <span className={`font-bold ${telemetry.boostBar >= 1.0 ? 'text-red-400' : 'text-white'}`}>
-                {telemetry.boostBar >= 0 ? `+${telemetry.boostBar.toFixed(2)}` : telemetry.boostBar.toFixed(2)} bar
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-400">RPM:</span>
-              <span className="font-bold text-white">{telemetry.rpm}</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-400">MAF:</span>
-              <span className="font-bold text-blue-400">{telemetry.mafGramsPerSec.toFixed(1)} g/s</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-400">BHP:</span>
-              <span className="font-bold text-amber-400">~{telemetry.calculatedHp}</span>
-            </div>
+            {connectionMode === 'disconnected' ? (
+              <div className="flex items-center gap-2 text-slate-400 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800 text-[11px]">
+                <span className="w-2 h-2 rounded-full bg-slate-500" />
+                <span>OBD2: Μη Συνδεδεμένο</span>
+              </div>
+            ) : connectionMode === 'simulator' ? (
+              <div className="flex items-center gap-2 text-amber-300 bg-amber-950/40 px-2.5 py-1 rounded-lg border border-amber-500/40 text-[11px]">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                <span>ΕΞΟΜΟΙΩΣΗ (DEMO)</span>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-400">ΠΙΕΣΗ:</span>
+                  <span className={`font-bold ${telemetry.boostBar >= 1.0 ? 'text-red-400' : 'text-white'}`}>
+                    {telemetry.boostBar >= 0 ? `+${telemetry.boostBar.toFixed(2)}` : telemetry.boostBar.toFixed(2)} bar
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-400">RPM:</span>
+                  <span className="font-bold text-white">{telemetry.rpm}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-400">MAF:</span>
+                  <span className="font-bold text-blue-400">{telemetry.mafGramsPerSec.toFixed(1)} g/s</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-400">BHP:</span>
+                  <span className="font-bold text-amber-400">~{telemetry.calculatedHp}</span>
+                </div>
+              </>
+            )}
             {activeDTCs.length > 0 && (
               <button
                 onClick={() => setActiveTab('dtc')}

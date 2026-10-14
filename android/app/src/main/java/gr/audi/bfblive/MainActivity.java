@@ -276,12 +276,14 @@ public class MainActivity extends AppCompatActivity {
             try {
                 Thread.sleep(300);
                 executeRaw("ATZ");
-                Thread.sleep(400);
+                Thread.sleep(500);
                 executeRaw("ATE0");
                 executeRaw("ATL0");
-                executeRaw("ATS0");
+                executeRaw("ATS1");
                 executeRaw("ATH0");
+                executeRaw("ATAT1");
                 executeRaw("ATSP0");
+                executeRaw("0100");
             } catch (Exception ignored) {}
         }
 
