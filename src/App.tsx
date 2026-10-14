@@ -7,14 +7,11 @@ import {
   Smartphone, 
   Maximize2, 
   Minimize2, 
-  Volume2, 
-  VolumeX, 
   Layers,
   FlipHorizontal,
   Cpu,
   Trophy,
-  Sparkles,
-  Zap
+  Terminal
 } from 'lucide-react';
 import { obdEngine, ConnectionMode, ENGINE_STAGES, ZERO_TELEMETRY } from './services/obdService';
 import { TelemetryData, DTCFault, EngineStageId, FuelOctane } from './types/telemetry';
@@ -31,14 +28,13 @@ import { PerformanceTimer } from './components/PerformanceTimer';
 import { DataLogger } from './components/DataLogger';
 import { AndroidApkCenter } from './components/AndroidApkCenter';
 import { PWAInstallButton } from './components/PWAInstallButton';
-import { audioEngine } from './services/audioEngine';
+import { ObdDebugPanel } from './components/ObdDebugPanel';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'cockpit' | 'tuning' | 'dyno' | 'vagblocks' | 'dtc' | 'timer' | 'logger' | 'apk'>('cockpit');
+  const [activeTab, setActiveTab] = useState<'cockpit' | 'debug' | 'vagblocks' | 'dtc' | 'tuning' | 'dyno' | 'timer' | 'logger' | 'apk'>('cockpit');
   const [isHudOpen, setIsHudOpen] = useState(false);
   const [currentStage, setCurrentStage] = useState<EngineStageId>('stage1');
   const [currentOctane, setCurrentOctane] = useState<FuelOctane>(100);
-  const [soundEnabled, setSoundEnabled] = useState(false);
 
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     ...ZERO_TELEMETRY,
@@ -78,12 +74,6 @@ export default function App() {
 
   const handleRefreshDTCs = () => {
     setActiveDTCs(obdEngine.getActiveDTCs());
-  };
-
-  const toggleSound = () => {
-    const next = !soundEnabled;
-    setSoundEnabled(next);
-    audioEngine.setEnabled(next);
   };
 
   const toggleFullscreen = () => {
@@ -145,11 +135,6 @@ export default function App() {
                 <span className="w-2 h-2 rounded-full bg-slate-500" />
                 <span>OBD2: Μη Συνδεδεμένο</span>
               </div>
-            ) : connectionMode === 'simulator' ? (
-              <div className="flex items-center gap-2 text-amber-300 bg-amber-950/40 px-2.5 py-1 rounded-lg border border-amber-500/40 text-[11px]">
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-                <span>ΕΞΟΜΟΙΩΣΗ (DEMO)</span>
-              </div>
             ) : (
               <>
                 <div className="flex items-center gap-1.5">
@@ -185,6 +170,21 @@ export default function App() {
 
           {/* Header Action Tools */}
           <div className="flex items-center gap-2">
+            {/* Debug Console Quick Button */}
+            <button
+              onClick={() => setActiveTab('debug')}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition cursor-pointer ${
+                activeTab === 'debug'
+                  ? 'bg-amber-600 text-white border-amber-400'
+                  : 'bg-amber-950/60 hover:bg-amber-900/60 border-amber-500/50 text-amber-300'
+              }`}
+              title="Κονσόλα Debug OBD2 & Raw Hex Αισθητήρων"
+            >
+              <Terminal className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Debug OBD2</span>
+              <span className="sm:hidden">Debug</span>
+            </button>
+
             {/* HUD Mode button for Night Driving reflection */}
             <button
               onClick={() => setIsHudOpen(true)}
@@ -194,19 +194,6 @@ export default function App() {
               <FlipHorizontal className="w-3.5 h-3.5 text-emerald-400" />
               <span className="hidden sm:inline">HUD Παρμπρίζ</span>
               <span className="sm:hidden">HUD</span>
-            </button>
-
-            {/* Sound toggle */}
-            <button
-              onClick={toggleSound}
-              className={`p-1.5 rounded-lg transition cursor-pointer ${
-                soundEnabled
-                  ? 'bg-red-600 text-white shadow-sm shadow-red-600/30'
-                  : 'bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white'
-              }`}
-              title={soundEnabled ? 'Απενεργοποίηση ήχου κινητήρα/σκάστρας' : 'Ενεργοποίηση ήχου κινητήρα & σκάστρας'}
-            >
-              {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
             </button>
 
             {/* APK Center Button */}
@@ -234,7 +221,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Navigation Tabs Bar with All Options */}
+        {/* Navigation Tabs Bar */}
         <div className="max-w-7xl mx-auto mt-2 pt-2 border-t border-slate-800/60 flex items-center gap-1 sm:gap-1.5 overflow-x-auto no-scrollbar text-xs">
           <button
             onClick={() => setActiveTab('cockpit')}
@@ -249,27 +236,15 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab('tuning')}
+            onClick={() => setActiveTab('debug')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'tuning'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              activeTab === 'debug'
+                ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30'
+                : 'text-amber-400 hover:text-white hover:bg-amber-950/40 border border-amber-500/30'
             }`}
           >
-            <Cpu className="w-3.5 h-3.5 text-red-400" />
-            <span>Στάδια Tuning ({stageConfig.badge})</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('dyno')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'dyno'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-            }`}
-          >
-            <Trophy className="w-3.5 h-3.5 text-amber-400" />
-            <span>Δυναμομέτρηση Dyno</span>
+            <Terminal className="w-3.5 h-3.5" />
+            <span>Debug &amp; Τεστ Αισθητήρων</span>
           </button>
 
           <button
@@ -294,6 +269,30 @@ export default function App() {
           >
             <Wrench className="w-3.5 h-3.5" />
             <span>Διαγνωστικό DTC {activeDTCs.length > 0 && `(${activeDTCs.length})`}</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('tuning')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
+              activeTab === 'tuning'
+                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            }`}
+          >
+            <Cpu className="w-3.5 h-3.5 text-red-400" />
+            <span>Στάδια Tuning ({stageConfig.badge})</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('dyno')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
+              activeTab === 'dyno'
+                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            }`}
+          >
+            <Trophy className="w-3.5 h-3.5 text-amber-400" />
+            <span>Δυναμομέτρηση Dyno</span>
           </button>
 
           <button
@@ -347,11 +346,12 @@ export default function App() {
         {/* Tab 1: Cockpit / Telemetry */}
         {activeTab === 'cockpit' && (
           <div className="space-y-5">
-            {/* Throttle & Simulator control bar */}
+            {/* OBD-II Connection Control Bar */}
             <ThrottleSimulatorControl
               mode={connectionMode}
               onResetPeak={handleResetPeak}
               statusMessage={statusMessage}
+              onOpenDebug={() => setActiveTab('debug')}
             />
 
             {/* Twin Analog / Digital Gauges: Boost Gauge + RPM Rev Counter */}
@@ -390,7 +390,19 @@ export default function App() {
           </div>
         )}
 
-        {/* Tab 2: Tuning & Engine Stages */}
+        {/* Tab 2: Live OBD-II Debug & Diagnostics Console */}
+        {activeTab === 'debug' && (
+          <div className="space-y-4">
+            <ThrottleSimulatorControl
+              mode={connectionMode}
+              onResetPeak={handleResetPeak}
+              statusMessage={statusMessage}
+            />
+            <ObdDebugPanel />
+          </div>
+        )}
+
+        {/* Tab 3: Tuning & Engine Stages */}
         {activeTab === 'tuning' && (
           <EngineStageSelector
             currentStage={currentStage}
@@ -400,7 +412,7 @@ export default function App() {
           />
         )}
 
-        {/* Tab 3: Dyno Power Curve */}
+        {/* Tab 4: Dyno Power Curve */}
         {activeTab === 'dyno' && (
           <DynoPowerGraph
             telemetry={telemetry}
@@ -408,12 +420,12 @@ export default function App() {
           />
         )}
 
-        {/* Tab 4: VAG Measuring Blocks */}
+        {/* Tab 5: VAG Measuring Blocks */}
         {activeTab === 'vagblocks' && (
           <VagMeasuringBlocks telemetry={telemetry} />
         )}
 
-        {/* Tab 5: DTC Scanner */}
+        {/* Tab 6: DTC Scanner */}
         {activeTab === 'dtc' && (
           <DtcScanner
             dtcs={activeDTCs}
@@ -421,17 +433,17 @@ export default function App() {
           />
         )}
 
-        {/* Tab 6: Performance Timer */}
+        {/* Tab 7: Performance Timer */}
         {activeTab === 'timer' && (
           <PerformanceTimer currentSpeed={telemetry.speed} />
         )}
 
-        {/* Tab 7: Datalogger */}
+        {/* Tab 8: Datalogger */}
         {activeTab === 'logger' && (
           <DataLogger telemetry={telemetry} />
         )}
 
-        {/* Tab 8: Android APK & Project */}
+        {/* Tab 9: Android APK & Project */}
         {activeTab === 'apk' && (
           <AndroidApkCenter />
         )}
@@ -445,6 +457,12 @@ export default function App() {
             <span>AudiBFB Live • Package: <code className="text-slate-300">gr.audi.bfblive</code> • {stageConfig.name}</span>
           </div>
           <div className="flex items-center gap-4">
+            <button
+              onClick={() => setActiveTab('debug')}
+              className="text-amber-400 hover:text-amber-300 underline underline-offset-2 cursor-pointer font-sans"
+            >
+              Debug OBD2
+            </button>
             <button
               onClick={() => setIsHudOpen(true)}
               className="text-emerald-400 hover:text-emerald-300 underline underline-offset-2 cursor-pointer font-sans"

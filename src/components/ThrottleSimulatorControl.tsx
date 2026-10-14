@@ -1,26 +1,36 @@
 import React, { useState, useEffect } from 'react';
-import { Bluetooth, Wifi, Settings, Flame, X, CheckCircle, Info, Sparkles, RefreshCw, Usb, Radio, Play, Square, Power, AlertCircle } from 'lucide-react';
-import { obdEngine, ConnectionMode, WifiObdConfig, PairedBtDevice } from '../services/obdService';
+import { Bluetooth, Wifi, Settings, X, Info, Radio, Terminal, RefreshCw } from 'lucide-react';
+import { obdEngine, ConnectionMode, PairedBtDevice, ObdDebugState } from '../services/obdService';
 
 interface Props {
   mode: ConnectionMode;
   onResetPeak: () => void;
   statusMessage?: string;
+  onOpenDebug?: () => void;
 }
 
-export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, onResetPeak, statusMessage }) => {
-  const [activePreset, setActivePreset] = useState<'idle' | 'city' | 'wot' | 'dyno'>('idle');
-  const [isPressingPedal, setIsPressingPedal] = useState(false);
-  const [throttleVal, setThrottleVal] = useState(0);
+export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, statusMessage, onOpenDebug }) => {
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [pairedDevices, setPairedDevices] = useState<PairedBtDevice[]>([]);
   const [selectedBtAddress, setSelectedBtAddress] = useState<string>('');
+  const [debugInfo, setDebugInfo] = useState<ObdDebugState>(obdEngine.getDebugState());
+  const [reinitBusy, setReinitBusy] = useState(false);
 
   const initialWifi = obdEngine.getWifiConfig();
   const [wifiIp, setWifiIp] = useState(initialWifi.ip);
   const [wifiPort, setWifiPort] = useState(initialWifi.port.toString());
 
   const isNative = obdEngine.isNativeAndroid();
+
+  useEffect(() => {
+    const unsub = obdEngine.subscribe({
+      onTelemetry: () => {},
+      onStatusChange: () => {},
+      onError: () => {},
+      onDebugUpdate: (d) => setDebugInfo({ ...d })
+    });
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     if (isNative) {
@@ -32,29 +42,6 @@ export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, onResetPeak, s
       }
     }
   }, [isNative, showSettingsModal]);
-
-  const handlePresetChange = (preset: 'idle' | 'city' | 'wot' | 'dyno') => {
-    setActivePreset(preset);
-    obdEngine.setSimPreset(preset);
-  };
-
-  const startPressingPedal = () => {
-    setIsPressingPedal(true);
-    setThrottleVal(100);
-    obdEngine.setManualThrottle(100);
-  };
-
-  const stopPressingPedal = () => {
-    setIsPressingPedal(false);
-    setThrottleVal(0);
-    obdEngine.setManualThrottle(0);
-  };
-
-  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Number(e.target.value);
-    setThrottleVal(val);
-    obdEngine.setManualThrottle(val);
-  };
 
   const handleBluetoothToggle = () => {
     if (mode === 'bluetooth') {
@@ -72,20 +59,21 @@ export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, onResetPeak, s
     }
   };
 
-  const handleUsbToggle = () => {
-    if (mode === 'usb') {
-      obdEngine.disconnectBluetooth();
+  const handleDisconnect = () => {
+    if (mode === 'wifi') {
+      obdEngine.disconnectWifi();
     } else {
-      obdEngine.connectSerial();
+      obdEngine.disconnectBluetooth();
     }
   };
 
-  const handleStartDemo = () => {
-    obdEngine.startSimulatorMode();
-  };
-
-  const handleStopDemo = () => {
-    obdEngine.stopSimulatorMode();
+  const handleReinitEcu = async () => {
+    setReinitBusy(true);
+    try {
+      await obdEngine.runFullSensorDiagnosticSweep();
+    } finally {
+      setReinitBusy(false);
+    }
   };
 
   const handleSaveWifiConfig = () => {
@@ -94,12 +82,12 @@ export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, onResetPeak, s
     obdEngine.connectWifi({ ip: wifiIp, port: Number(wifiPort) || 35000 });
   };
 
-  const isLiveConnected = mode === 'bluetooth' || mode === 'wifi' || mode === 'usb';
+  const isLiveConnected = mode === 'bluetooth' || mode === 'wifi';
 
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-3">
       <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
-        {/* Connection status and WiFi / Bluetooth / USB buttons */}
+        {/* Connection status and Bluetooth / WiFi / Debug buttons */}
         <div className="flex items-center flex-wrap gap-2">
           {/* Bluetooth OBD2 Button */}
           <button
@@ -131,20 +119,6 @@ export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, onResetPeak, s
             <span>{mode === 'wifi' ? 'WiFi OK' : 'WiFi OBD'}</span>
           </button>
 
-          {/* USB Cable Button */}
-          <button
-            onClick={handleUsbToggle}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition active:scale-95 cursor-pointer ${
-              mode === 'usb'
-                ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30 ring-2 ring-purple-400'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
-            }`}
-            title="Σύνδεση με καλώδιο USB OTG KKL / FTDI"
-          >
-            <Usb className="w-3.5 h-3.5 text-purple-400" />
-            <span>{mode === 'usb' ? 'USB OK' : 'USB OTG'}</span>
-          </button>
-
           {/* Connection Settings gear */}
           <button
             onClick={() => setShowSettingsModal(true)}
@@ -154,162 +128,86 @@ export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, onResetPeak, s
             <Settings className="w-4 h-4" />
           </button>
 
+          {/* Direct Debug Console Button */}
+          {onOpenDebug && (
+            <button
+              onClick={onOpenDebug}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/50 text-amber-300 text-xs font-bold uppercase tracking-wider transition cursor-pointer"
+              title="Άνοιγμα Κονσόλας Debug & Ελέγχου Αισθητήρων OBD-II"
+            >
+              <Terminal className="w-3.5 h-3.5 text-amber-400" />
+              <span>Debug OBD2</span>
+            </button>
+          )}
+
           {/* Status badge */}
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono">
             <span className={`w-2 h-2 rounded-full ${
               isLiveConnected ? 'bg-emerald-400 shadow-md shadow-emerald-400 animate-pulse' :
               mode === 'connecting' ? 'bg-amber-400 animate-pulse' :
-              mode === 'simulator' ? 'bg-amber-400' :
               'bg-slate-500'
             }`} />
             <span className="text-slate-300">
-              {mode === 'bluetooth' ? 'Ζωντανό Bluetooth OBD2' :
+              {mode === 'bluetooth' ? `BT: ${debugInfo.deviceName}` :
                mode === 'wifi' ? `WiFi: ${wifiIp}:${wifiPort}` :
-               mode === 'usb' ? 'USB KKL Cable' :
-               mode === 'simulator' ? 'Εξομοίωση (DEMO)' :
-               'Αποσυνδεδεμένο (Αναμονή OBD2)'}
+               mode === 'connecting' ? 'Σύνδεση σε εξέλιξη...' :
+               'Αποσυνδεδεμένο'}
             </span>
           </div>
         </div>
 
-        {/* Live connected status badge OR Demo Controls OR Disconnected helper */}
-        {isLiveConnected ? (
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 bg-emerald-950/40 border border-emerald-500/40 px-3.5 py-1.5 rounded-xl text-xs font-bold text-emerald-300 font-mono">
+        {/* Live connected status badge & Re-Init button */}
+        {isLiveConnected && (
+          <div className="flex items-center flex-wrap gap-2">
+            <div className="flex items-center gap-2 bg-emerald-950/40 border border-emerald-500/40 px-3 py-1.5 rounded-xl text-xs font-bold text-emerald-300 font-mono">
               <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
-              <span>LIVE ECU 01-ENGINE DATA (ME7.5)</span>
+              <span>
+                {debugInfo.ecuLocked
+                  ? `ECU LOCKED (${debugInfo.protocolName})`
+                  : 'DONGLE OK • ΑΝΑΜΟΝΗ ECU'}
+              </span>
+              <span className="text-slate-400">|</span>
+              <span className="text-emerald-400">OK:{debugInfo.totalValidResponses}</span>
             </div>
+
             <button
-              onClick={handleBluetoothToggle}
+              onClick={handleReinitEcu}
+              disabled={reinitBusy}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-950/60 hover:bg-blue-900/70 border border-blue-500/40 text-blue-300 text-xs font-semibold transition cursor-pointer"
+              title="Επανασύνδεση πρωτοκόλλου ECU & σάρωση όλων των αισθητήρων"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${reinitBusy ? 'animate-spin' : ''}`} />
+              <span>Επανασύνδεση ECU</span>
+            </button>
+
+            <button
+              onClick={handleDisconnect}
               className="px-2.5 py-1.5 rounded-lg bg-red-950/40 hover:bg-red-900/60 border border-red-500/30 text-red-300 text-xs font-semibold transition cursor-pointer"
             >
               Αποσύνδεση
             </button>
           </div>
-        ) : mode === 'simulator' ? (
-          <div className="flex items-center gap-3 flex-wrap">
-            {/* Preset Selector */}
-            <div className="flex items-center flex-wrap gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
-              <span className="text-[10px] text-amber-400 font-bold px-1.5 uppercase">Demo:</span>
-              <button
-                onClick={() => handlePresetChange('idle')}
-                className={`px-2.5 py-1 rounded-lg font-semibold transition cursor-pointer ${
-                  activePreset === 'idle'
-                    ? 'bg-red-600 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                Ρελαντί
-              </button>
-              <button
-                onClick={() => handlePresetChange('city')}
-                className={`px-2.5 py-1 rounded-lg font-semibold transition cursor-pointer ${
-                  activePreset === 'city'
-                    ? 'bg-red-600 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                Πορεία
-              </button>
-              <button
-                onClick={() => handlePresetChange('wot')}
-                className={`px-2.5 py-1 rounded-lg font-semibold transition cursor-pointer ${
-                  activePreset === 'wot'
-                    ? 'bg-red-600 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                WOT
-              </button>
-            </div>
-
-            {/* Hold to rev pedal and manual slider */}
-            <div className="flex items-center gap-2">
-              <div className="flex flex-col items-end">
-                <span className="text-[10px] text-slate-400 font-mono">{throttleVal}%</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={throttleVal}
-                  onChange={handleSliderChange}
-                  className="w-20 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-red-600"
-                />
-              </div>
-
-              <button
-                onMouseDown={startPressingPedal}
-                onMouseUp={stopPressingPedal}
-                onMouseLeave={stopPressingPedal}
-                onTouchStart={startPressingPedal}
-                onTouchEnd={stopPressingPedal}
-                className={`px-3 py-2 rounded-xl font-bold text-xs uppercase tracking-wider transition active:scale-95 cursor-pointer shadow-lg select-none ${
-                  isPressingPedal
-                    ? 'bg-red-500 text-white scale-95 shadow-red-500/50'
-                    : 'bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-500 hover:to-rose-600 text-white shadow-red-600/30'
-                }`}
-              >
-                <span className="flex items-center gap-1">
-                  <Flame className={`w-3.5 h-3.5 ${isPressingPedal ? 'animate-bounce' : ''}`} />
-                  {isPressingPedal ? 'WOT!' : 'Γκάζι'}
-                </span>
-              </button>
-
-              <button
-                onClick={handleStopDemo}
-                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer flex items-center gap-1"
-                title="Τερματισμός δοκιμαστικής λειτουργίας"
-              >
-                <Square className="w-3 h-3 text-amber-400" />
-                <span>Έξοδος Demo</span>
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleStartDemo}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-300 hover:text-white text-xs font-semibold transition cursor-pointer"
-              title="Δοκιμάστε τα όργανα και τις οθόνες χωρίς να βρίσκεστε στο αυτοκίνητο"
-            >
-              <Play className="w-3.5 h-3.5 text-amber-400" />
-              <span>Δοκιμή με Εξομοιωτή (Demo)</span>
-            </button>
-          </div>
         )}
       </div>
 
-      {/* Mode Warning or Connection notice */}
+      {/* Disconnected notice */}
       {mode === 'disconnected' && (
-        <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl px-3 py-2 text-xs text-slate-400 flex items-center gap-2">
-          <Info className="w-4 h-4 text-blue-400 shrink-0" />
-          <span>
-            <strong>Μη συνδεδεμένο:</strong> Τα όργανα βρίσκονται σε κατάσταση αναμονής (0 RPM / 0.00 bar). Συνδέστε το Bluetooth OBD2 dongle σας για να διαβάσετε πραγματικά δεδομένα από την ECU ME7.5 του Audi A4 B7.
-          </span>
-        </div>
-      )}
-
-      {mode === 'simulator' && (
-        <div className="bg-amber-950/40 border border-amber-500/40 rounded-xl px-3 py-2 text-xs text-amber-200 flex items-center justify-between gap-2">
+        <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl px-3 py-2 text-xs text-slate-400 flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            <Info className="w-4 h-4 text-blue-400 shrink-0" />
             <span>
-              <strong>Λειτουργία Προσομοίωσης (Demo):</strong> Τα όργανα κινούνται με συνθετικά δεδομένα για δοκιμή των οθονών.
+              <strong>Μη συνδεδεμένο:</strong> Συνδέστε το Bluetooth ή WiFi OBD2 dongle σας με ανοιχτό διακόπτη (Ignition ON) για ζωντανή ανάγνωση αισθητήρων.
             </span>
           </div>
-          <button
-            onClick={handleStopDemo}
-            className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white font-bold text-[11px] uppercase cursor-pointer whitespace-nowrap"
-          >
-            Επαναφορά σε Αποσύνδεση
-          </button>
         </div>
       )}
 
       {statusMessage && (
-        <div className="mt-1 pt-2 border-t border-slate-800/80 text-[11px] font-mono text-slate-400 flex items-center justify-between">
+        <div className="mt-1 pt-2 border-t border-slate-800/80 text-[11px] font-mono text-slate-400 flex items-center justify-between gap-2">
           <span className="truncate">{statusMessage}</span>
-          <span className="text-slate-400 shrink-0 ml-2">Audi ME7.5 ECU Engine Group 01</span>
+          <span className="text-slate-400 shrink-0">
+            TX:{debugInfo.totalCommandsSent} | OK:{debugInfo.totalValidResponses} | ERR:{debugInfo.totalErrors}
+          </span>
         </div>
       )}
 
@@ -330,7 +228,7 @@ export const ThrottleSimulatorControl: React.FC<Props> = ({ mode, onResetPeak, s
               </div>
               <div>
                 <h3 className="text-base font-bold text-white">Ρυθμίσεις Σύνδεσης Dongle OBD-II</h3>
-                <p className="text-xs text-slate-400">ELM327 Bluetooth Classic / BLE / WiFi / USB</p>
+                <p className="text-xs text-slate-400">ELM327 Bluetooth Classic / BLE / WiFi</p>
               </div>
             </div>
 

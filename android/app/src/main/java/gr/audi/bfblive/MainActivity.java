@@ -274,17 +274,16 @@ public class MainActivity extends AppCompatActivity {
 
         private void initElm327() {
             try {
-                Thread.sleep(200);
+                Thread.sleep(250);
                 executeRaw("ATZ");
-                Thread.sleep(400);
+                Thread.sleep(500);
                 executeRaw("ATE0"); // Echo off
                 executeRaw("ATL0"); // Linefeeds off
                 executeRaw("ATS1"); // Spaces on
                 executeRaw("ATH0"); // Headers off
-                executeRaw("ATAT2"); // Fast adaptive timing
-                executeRaw("ATST 28"); // Fast timeout (~160ms) so unsupported PIDs don't stall!
+                executeRaw("ATAT1"); // Standard adaptive timing (safe for Audi K-Line & CAN)
                 executeRaw("ATSP0"); // Auto protocol search
-                executeRaw("0100"); // ECU wake up & protocol lock
+                executeRaw("0100"); // ECU wake up & protocol lock (waits full K-Line init)
             } catch (Exception ignored) {}
         }
 
@@ -305,26 +304,32 @@ public class MainActivity extends AppCompatActivity {
                     obdInputStream.read();
                 }
 
-                String fullCmd = cmd.trim() + "\r";
+                String cleanCmd = cmd.trim().toUpperCase();
+                String fullCmd = cleanCmd + "\r";
                 obdOutputStream.write(fullCmd.getBytes());
                 obdOutputStream.flush();
 
                 StringBuilder sb = new StringBuilder();
                 long startTime = System.currentTimeMillis();
+                long maxWait = (cleanCmd.equals("0100") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 4200 : 1500;
                 byte[] buffer = new byte[128];
 
-                while (System.currentTimeMillis() - startTime < 900) {
+                while (System.currentTimeMillis() - startTime < maxWait) {
                     if (obdInputStream.available() > 0) {
                         int read = obdInputStream.read(buffer);
                         if (read > 0) {
                             String chunk = new String(buffer, 0, read);
                             sb.append(chunk);
+                            String current = sb.toString().toUpperCase();
+                            if (current.contains("SEARCHING") || current.contains("BUS INIT")) {
+                                maxWait = 5000; // Wait for full K-Line 5-baud handshake
+                            }
                             if (sb.indexOf(">") != -1) {
                                 break;
                             }
                         }
                     } else {
-                        Thread.sleep(6);
+                        Thread.sleep(8);
                     }
                 }
 

@@ -36,6 +36,9 @@ export interface TelemetryData {
   n75DutyCycle: number; // % wastegate duty
   batteryVoltage: number; // V
   throttlePosition: number; // %
+  engineLoad?: number; // % from PID 0104
+  lambdaSpecified?: number; // Target Lambda from PID 0144 or ME7.5 load map
+  shortTermFuelTrim?: number; // % from PID 0106
   o2SensorVoltage?: number; // Pre-cat O2 sensor (V)
   o2SensorAfterVoltage?: number; // Post-cat O2 sensor after catalyst (V)
   injectionTimeMs?: number; // Injector open time (ms)

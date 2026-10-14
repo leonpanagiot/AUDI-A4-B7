@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertTriangle, CheckCircle, RefreshCw, Trash2, Wrench, ShieldCheck, PlusCircle, AlertCircle, Info } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Trash2, Wrench, ShieldCheck } from 'lucide-react';
 import { DTCFault } from '../types/telemetry';
 import { obdEngine } from '../services/obdService';
 
@@ -13,7 +13,6 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
   const [clearing, setClearing] = useState(false);
   const [showConfirmClear, setShowConfirmClear] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [isDemoFaults, setIsDemoFaults] = useState(false);
 
   const mode = obdEngine.getMode();
 
@@ -22,7 +21,6 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
     setStatusMessage('Αποστολή εντολών OBD Mode 03 & 07 στην ECU Audi 1.8T BFB (01-Engine)...');
     try {
       const results = await obdEngine.scanRealDTCs();
-      setIsDemoFaults(false);
       onRefresh();
       if (results.length === 0) {
         setStatusMessage('Η ECU απάντησε: 0 Κωδικοί Βλάβης (MIL OFF). Το αυτοκίνητο δεν έχει κανένα σφάλμα.');
@@ -42,7 +40,6 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
     setStatusMessage('Αποστολή εντολής Mode 04 (Clear DTCs & Reset MIL)...');
     try {
       await obdEngine.clearDTCs();
-      setIsDemoFaults(false);
       onRefresh();
       setStatusMessage('Όλες οι βλάβες διαγράφηκαν επιτυχώς. Η λυχνία Check Engine είναι σβηστή.');
     } catch (e: any) {
@@ -50,13 +47,6 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
     } finally {
       setClearing(false);
     }
-  };
-
-  const handleAddSampleFault = () => {
-    obdEngine.loadDemoDTCs();
-    setIsDemoFaults(true);
-    onRefresh();
-    setStatusMessage('Φορτώθηκαν εικονικά δοκιμαστικά σφάλματα DEMO (ΜΟΝΟ για δοκιμή της οθόνης).');
   };
 
   return (
@@ -75,7 +65,7 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
               {dtcs.length === 0 ? 'MIL OFF (ΚΑΘΑΡΟ - 0 ΒΛΑΒΕΣ)' : `MIL ON (${dtcs.length} ΒΛΑΒΕΣ)`}
             </span>
             <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
-              {mode === 'bluetooth' ? 'Bluetooth OBD-II' : mode === 'wifi' ? 'WiFi OBD-II' : mode === 'usb' ? 'USB KKL Cable' : mode === 'simulator' ? 'Εξομοιωτής (Demo)' : 'Αποσυνδεδεμένο'}
+              {mode === 'bluetooth' ? 'Bluetooth OBD-II' : mode === 'wifi' ? 'WiFi OBD-II' : 'Αποσυνδεδεμένο'}
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
@@ -103,35 +93,8 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
               <span>Σβήσιμο DTC</span>
             </button>
           )}
-
-          {dtcs.length === 0 && (
-            <button
-              onClick={handleAddSampleFault}
-              className="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 hover:text-slate-200 text-xs font-medium transition cursor-pointer flex items-center gap-1.5"
-              title="Προβολή δοκιμαστικών σφαλμάτων για έλεγχο της οθόνης"
-            >
-              <PlusCircle className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Δοκιμαστικά Σφάλματα (Demo)</span>
-            </button>
-          )}
         </div>
       </div>
-
-      {/* Demo faults warning banner if active */}
-      {isDemoFaults && dtcs.length > 0 && (
-        <div className="bg-amber-950/40 border border-amber-500/50 rounded-xl p-3 flex items-center justify-between gap-3 text-amber-200 text-xs">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-            <span><strong>ΠΡΟΣΟΧΗ - ΔΟΚΙΜΑΣΤΙΚΑ ΔΕΔΟΜΕΝΑ (DEMO):</strong> Τα σφάλματα που βλέπετε παρακάτω είναι εικονικά δείγματα για δοκιμή της οθόνης και ΔΕΝ προέρχονται από το αυτοκίνητό σας!</span>
-          </div>
-          <button
-            onClick={handleClear}
-            className="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-bold uppercase cursor-pointer whitespace-nowrap"
-          >
-            Επαναφορα σε Καθαρο
-          </button>
-        </div>
-      )}
 
       {/* Confirmation Modal */}
       {showConfirmClear && (
@@ -174,7 +137,7 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
           </div>
           <h4 className="text-lg font-bold text-white">Δεν βρέθηκαν κωδικοί σφάλματος (MIL OFF)</h4>
           <p className="text-xs text-slate-300 max-w-lg leading-relaxed">
-            Ο εγκέφαλος (ECU ME7.5) του Audi A4 B7 είναι πεντακάθαρος! Δεν υπάρχουν ενεργές ή αποθηκευμένες βλάβες στη μνήμη. Όλα τα υποσυστήματα (τούρμπο, ανάφλεξη, μπεκ ψεκασμού, αισθητήρες λ και MAF) λειτουργούν κανονικά.
+            Πατήστε «Σάρωση Σφαλμάτων» ενώ είστε συνδεδεμένος με το OBD2 dongle για ανάγνωση της μνήμης βλαβών (Mode 03 &amp; 07) από την ECU Bosch ME7.5.
           </p>
           <div className="pt-2 flex items-center gap-2">
             <button
@@ -182,13 +145,7 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
               className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 transition cursor-pointer flex items-center gap-1.5"
             >
               <RefreshCw className="w-3.5 h-3.5 text-blue-400" />
-              <span>Επανέλεγχος ECU</span>
-            </button>
-            <button
-              onClick={handleAddSampleFault}
-              className="px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs text-slate-400 hover:text-slate-300 transition cursor-pointer"
-            >
-              Δοκιμή εμφάνισης σφαλμάτων (Demo)
+              <span>Έλεγχος ECU τώρα</span>
             </button>
           </div>
         </div>
@@ -221,11 +178,6 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
                       <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-slate-800 text-slate-300">
                         {fault.system}
                       </span>
-                      {isDemoFaults && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                          DEMO
-                        </span>
-                      )}
                     </div>
                     <h4 className="text-sm font-semibold text-slate-200 mt-0.5">{fault.title}</h4>
                   </div>
@@ -248,36 +200,13 @@ export const DtcScanner: React.FC<Props> = ({ dtcs, onRefresh }) => {
                   {fault.greekDescription}
                 </p>
                 <div className="text-[11px] text-slate-400 flex items-center justify-between">
-                  <span>Επίσημη περιγραφή VAG: <em>{fault.description}</em></span>
-                  <span className="font-mono text-slate-400">ECU 06A 906 018 / ME7.5</span>
+                  <span>Αγγλική Περιγραφή OBD-II: {fault.description}</span>
                 </div>
               </div>
             </div>
           ))}
         </div>
       )}
-
-      {/* Common 1.8T BFB Diagnostic Quick Guide */}
-      <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 text-xs text-slate-400">
-        <h5 className="font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-          <Wrench className="w-3.5 h-3.5 text-blue-400" />
-          Συμβουλές Συντήρησης Audi 1.8T BFB (163hp / 20V Turbo)
-        </h5>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-[11px]">
-          <div className="p-2.5 rounded bg-slate-950/50 border border-slate-800">
-            <strong className="text-slate-200 block mb-0.5">Underboost (P0299)</strong>
-            Συχνά οφείλεται στη σκάστρα (Diverter Valve 06A 145 710 N) ή σε σχισμένο κολάρο intercooler.
-          </div>
-          <div className="p-2.5 rounded bg-slate-950/50 border border-slate-800">
-            <strong className="text-slate-200 block mb-0.5">Misfires (P0300-P0304)</strong>
-            Αναβάθμιση σε κόκκινους πολλαπλασιαστές από 2.0 TFSI (R8 coils) και μπουζί NGK BKR7E / PFR6Q.
-          </div>
-          <div className="p-2.5 rounded bg-slate-950/50 border border-slate-800">
-            <strong className="text-slate-200 block mb-0.5">System Lean (P0171)</strong>
-            Έλεγχος των σωληνώσεων αναθυμιάσεων στροφαλοθαλάμου (PCV breather pipe) κάτω από την πολλαπλή εισαγωγής.
-          </div>
-        </div>
-      </div>
     </div>
   );
 };

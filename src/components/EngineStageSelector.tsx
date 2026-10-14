@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
-import { Cpu, Flame, Volume2, VolumeX, CheckCircle, Zap, ShieldAlert, Sparkles, Layers, Info, HelpCircle, AlertTriangle } from 'lucide-react';
+import React from 'react';
+import { Cpu, Flame, CheckCircle, HelpCircle } from 'lucide-react';
 import { obdEngine, ENGINE_STAGES } from '../services/obdService';
 import { EngineStageId, FuelOctane } from '../types/telemetry';
-import { audioEngine } from '../services/audioEngine';
 
 interface Props {
   currentStage: EngineStageId;
@@ -17,8 +16,6 @@ export const EngineStageSelector: React.FC<Props> = ({
   onStageChange,
   onOctaneChange,
 }) => {
-  const [audioActive, setAudioActive] = useState(audioEngine.getIsEnabled());
-
   const handleStageSelect = (stageId: EngineStageId) => {
     onStageChange(stageId);
     obdEngine.setEngineStage(stageId);
@@ -27,20 +24,6 @@ export const EngineStageSelector: React.FC<Props> = ({
   const handleOctaneSelect = (octane: FuelOctane) => {
     onOctaneChange(octane);
     obdEngine.setFuelOctane(octane);
-  };
-
-  const toggleSound = () => {
-    const next = !audioActive;
-    setAudioActive(next);
-    audioEngine.setEnabled(next);
-  };
-
-  const triggerBlowOffSound = () => {
-    if (!audioActive) {
-      setAudioActive(true);
-      audioEngine.setEnabled(true);
-    }
-    audioEngine.playBlowOffSound(1.3);
   };
 
   const activeConf = ENGINE_STAGES[currentStage];
@@ -60,30 +43,6 @@ export const EngineStageSelector: React.FC<Props> = ({
           <p className="text-xs text-slate-400 mt-1">
             Επιλέξτε το στάδιο του αυτοκινήτου σας (OEM Stock, Stage 1, Stage 2, Stage 3 K04) για σύγκριση τηλεμετρίας σε πραγματικό χρόνο.
           </p>
-        </div>
-
-        {/* Audio Toggle & Blow-Off Button */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={toggleSound}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition cursor-pointer ${
-              audioActive
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
-            }`}
-          >
-            {audioActive ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4 text-slate-400" />}
-            <span>{audioActive ? 'Ήχος ON' : 'Ήχος OFF'}</span>
-          </button>
-
-          <button
-            onClick={triggerBlowOffSound}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
-            title="Δοκιμή ήχου σκάστρας / blow-off valve"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-blue-400" />
-            <span>Σκάστρα (Blow-Off)</span>
-          </button>
         </div>
       </div>
 
@@ -168,6 +127,7 @@ export const EngineStageSelector: React.FC<Props> = ({
             <Flame className="w-4 h-4 text-amber-400" />
             Καύσιμο Αναφοράς (RON):
           </span>
+
           <div className="flex items-center gap-1.5">
             {([95, 98, 100] as FuelOctane[]).map((oct) => (
               <button
@@ -175,8 +135,8 @@ export const EngineStageSelector: React.FC<Props> = ({
                 onClick={() => handleOctaneSelect(oct)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition cursor-pointer ${
                   currentOctane === oct
-                    ? 'bg-amber-600 text-white shadow-sm shadow-amber-600/30'
-                    : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800'
+                    ? 'bg-amber-500 text-slate-950 shadow-sm shadow-amber-500/40'
+                    : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800'
                 }`}
               >
                 {oct} RON
@@ -185,12 +145,8 @@ export const EngineStageSelector: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Hardware spec info */}
-        <div className="text-xs text-slate-400 flex items-center gap-2">
-          <Zap className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>
-            <strong>Απαιτούμενο Hardware για {activeConf.badge}:</strong> {activeConf.hardware}
-          </span>
+        <div className="text-xs text-slate-400">
+          Εξαρτήματα Σταδίου: <strong className="text-slate-200">{activeConf.hardware}</strong>
         </div>
       </div>
     </div>
