@@ -8,19 +8,15 @@ import {
   Minimize2, 
   Layers,
   FlipHorizontal,
-  Cpu,
-  Trophy,
   Terminal
 } from 'lucide-react';
-import { obdEngine, ConnectionMode, ENGINE_STAGES, ZERO_TELEMETRY } from './services/obdService';
-import { TelemetryData, DTCFault, EngineStageId, FuelOctane } from './types/telemetry';
+import { obdEngine, ConnectionMode, ZERO_TELEMETRY } from './services/obdService';
+import { TelemetryData, DTCFault } from './types/telemetry';
 import { AnalogBoostGauge } from './components/AnalogBoostGauge';
 import { RpmRevCounter } from './components/RpmRevCounter';
 import { TelemetryGrid } from './components/TelemetryGrid';
 import { ThrottleSimulatorControl } from './components/ThrottleSimulatorControl';
-import { EngineStageSelector } from './components/EngineStageSelector';
 import { VagMeasuringBlocks } from './components/VagMeasuringBlocks';
-import { DynoPowerGraph } from './components/DynoPowerGraph';
 import { HudDisplay } from './components/HudDisplay';
 import { DtcScanner } from './components/DtcScanner';
 import { PerformanceTimer } from './components/PerformanceTimer';
@@ -28,10 +24,8 @@ import { DataLogger } from './components/DataLogger';
 import { ObdDebugPanel } from './components/ObdDebugPanel';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'cockpit' | 'debug' | 'vagblocks' | 'dtc' | 'tuning' | 'dyno' | 'timer' | 'logger'>('cockpit');
+  const [activeTab, setActiveTab] = useState<'cockpit' | 'debug' | 'vagblocks' | 'dtc' | 'timer' | 'logger'>('cockpit');
   const [isHudOpen, setIsHudOpen] = useState(false);
-  const [currentStage, setCurrentStage] = useState<EngineStageId>('stage1');
-  const [currentOctane, setCurrentOctane] = useState<FuelOctane>(100);
 
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     ...ZERO_TELEMETRY,
@@ -81,8 +75,6 @@ export default function App() {
     }
   };
 
-  const stageConfig = ENGINE_STAGES[currentStage];
-
   return (
     <div className="min-h-screen bg-[#070a12] text-slate-100 flex flex-col font-sans selection:bg-red-600 selection:text-white">
       {/* HUD Windshield Overlay Mode */}
@@ -114,15 +106,14 @@ export default function App() {
               </div>
             </div>
 
-            <button
-              onClick={() => setActiveTab('tuning')}
-              className="hidden md:inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 transition cursor-pointer"
-              title="Αλλαγή Stage Κινητήρα"
+            <div
+              className="hidden md:inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300"
+              title="Audi A4 B7 1.8T 20V (BFB / Bosch ME7.5)"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-              <span>{stageConfig.badge}</span>
-              <span className="text-slate-400">({currentOctane} RON)</span>
-            </button>
+              <span>1.8T 20V BFB</span>
+              <span className="text-slate-400">(Bosch ME7.5)</span>
+            </div>
           </div>
 
           {/* Quick HUD Metrics in Header */}
@@ -260,30 +251,6 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab('tuning')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'tuning'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-            }`}
-          >
-            <Cpu className="w-3.5 h-3.5 text-red-400" />
-            <span>Στάδια Tuning ({stageConfig.badge})</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('dyno')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
-              activeTab === 'dyno'
-                ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-            }`}
-          >
-            <Trophy className="w-3.5 h-3.5 text-amber-400" />
-            <span>Δυναμομέτρηση Dyno</span>
-          </button>
-
-          <button
             onClick={() => setActiveTab('timer')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition cursor-pointer whitespace-nowrap ${
               activeTab === 'timer'
@@ -335,6 +302,7 @@ export default function App() {
                   boostBar={telemetry.boostBar}
                   boostPsi={telemetry.boostPsi}
                   peakBoostBar={telemetry.peakBoostBar}
+                  boostSpecifiedBar={telemetry.boostSpecifiedBar}
                   onResetPeak={handleResetPeak}
                 />
               </div>
@@ -370,24 +338,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Tab 3: Tuning & Engine Stages */}
-        {activeTab === 'tuning' && (
-          <EngineStageSelector
-            currentStage={currentStage}
-            currentOctane={currentOctane}
-            onStageChange={setCurrentStage}
-            onOctaneChange={setCurrentOctane}
-          />
-        )}
-
-        {/* Tab 4: Dyno Power Curve */}
-        {activeTab === 'dyno' && (
-          <DynoPowerGraph
-            telemetry={telemetry}
-            currentStage={currentStage}
-          />
-        )}
-
         {/* Tab 5: VAG Measuring Blocks */}
         {activeTab === 'vagblocks' && (
           <VagMeasuringBlocks telemetry={telemetry} />
@@ -417,7 +367,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>AudiBFB Live • Audi A4 B7 1.8T 20V (Bosch ME7.5) • {stageConfig.name}</span>
+            <span>AudiBFB Live • Audi A4 B7 1.8T 20V (Bosch ME7.5)</span>
           </div>
           <div className="flex items-center gap-4">
             <button

@@ -22,6 +22,8 @@ export interface TelemetryData {
   boostBar: number | null;
   boostPsi: number | null;
   peakBoostBar: number | null;
+  boostSpecifiedBar?: number | null;
+  boostSpecifiedMbar?: number | null;
   coolantTemp: number | null; // °C (PID 0105)
   iat: number | null; // Intake Air Temp °C (PID 010F)
   oilTemp: number | null; // °C (PID 015C - null/N/A if unsupported)
@@ -53,8 +55,21 @@ export interface DTCFault {
   description: string;
   greekDescription: string;
   severity: 'low' | 'medium' | 'high' | 'critical';
-  system: 'Turbo / Boost' | 'Ignition / Fuel' | 'Sensors' | 'Emissions' | 'Cooling';
+  system: 'Turbo / Boost' | 'Ignition / Fuel' | 'Sensors' | 'Emissions' | 'Cooling' | 'Catalyst / EVAP';
   status: 'Active' | 'Pending' | 'Stored';
+  modeSource?: '03' | '07';
+  decodedPairHex?: string;
+  rawHexFrame?: string;
+}
+
+export interface DtcScanDebugInfo {
+  timestamp: string;
+  rawMode03Hex: string;
+  rawMode07Hex: string;
+  parsedMode03Frames: string[];
+  parsedMode07Frames: string[];
+  mode03Codes: Array<{ code: string; pairHex: string; frameHex: string }>;
+  mode07Codes: Array<{ code: string; pairHex: string; frameHex: string }>;
 }
 
 export interface PerformanceRun {

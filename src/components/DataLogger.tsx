@@ -82,7 +82,7 @@ export const DataLogger: React.FC<Props> = ({ telemetry }) => {
       rpm: t.rpm,
       speed: t.speed,
       boostBar: t.boostBar,
-      specifiedBoostMbar: null,
+      specifiedBoostMbar: t.boostSpecifiedMbar ?? null,
       actualBoostMbar,
       maf: t.mafGramsPerSec,
       engineLoad: t.engineLoad,

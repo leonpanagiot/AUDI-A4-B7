@@ -5,6 +5,7 @@ interface Props {
   boostBar: number | null;
   boostPsi: number | null;
   peakBoostBar: number | null;
+  boostSpecifiedBar?: number | null;
   onResetPeak: () => void;
   size?: number;
 }
@@ -13,6 +14,7 @@ export const AnalogBoostGauge: React.FC<Props> = ({
   boostBar,
   boostPsi,
   peakBoostBar,
+  boostSpecifiedBar,
   onResetPeak,
   size = 280,
 }) => {
@@ -289,12 +291,23 @@ export const AnalogBoostGauge: React.FC<Props> = ({
               letterSpacing="2"
               textAnchor="middle"
             >
-              {boostPsi !== null ? `BAR • ${boostPsi >= 0 ? `+${boostPsi.toFixed(1)}` : boostPsi.toFixed(1)} PSI` : 'PID 010B: N/A'}
+              {boostPsi !== null ? `BAR • ${boostPsi >= 0 ? `+${boostPsi.toFixed(1)}` : boostPsi.toFixed(1)} PSI` : '010B / KWP 115: N/A'}
             </text>
           </g>
         </svg>
 
-        {/* Peak memory badge & reset button */}
+        {/* Specified Boost badge (left) */}
+        <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 rounded-md px-2 py-1 text-[11px] font-mono shadow-md">
+          <span className="text-sky-400 font-bold">SPEC:</span>
+          <span className="text-white font-bold">
+            {boostSpecifiedBar !== null && boostSpecifiedBar !== undefined
+              ? `${boostSpecifiedBar >= 0 ? '+' : ''}${boostSpecifiedBar.toFixed(2)}`
+              : 'N/A'}
+          </span>
+          <span className="text-slate-400 text-[10px]">BAR</span>
+        </div>
+
+        {/* Peak memory badge & reset button (right) */}
         <div className="absolute top-2 right-2 flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 rounded-md px-2 py-1 text-[11px] font-mono shadow-md">
           <span className="text-amber-400 font-bold">PEAK:</span>
           <span className="text-white font-bold">

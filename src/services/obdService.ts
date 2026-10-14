@@ -1,4 +1,5 @@
-import { TelemetryData, DTCFault, EngineStageId, EngineStageConfig, FuelOctane, VagBlockGroup, VagBlockField } from '../types/telemetry';
+import { TelemetryData, DTCFault, DtcScanDebugInfo, EngineStageId, EngineStageConfig, FuelOctane, VagBlockGroup, VagBlockField } from '../types/telemetry';
+import { lookupAndTranslateDtcToGreek } from './vagDtcDictionary';
 
 export type ConnectionMode = 'bluetooth' | 'wifi' | 'connecting' | 'disconnected';
 
@@ -54,6 +55,11 @@ export interface ObdDebugState {
   supportedPids2140: string;
   supportedPids4160: string;
   oilTempPid015CSupported: string;
+  kwpSessionStatus: string;
+  kwp1089Response: string;
+  boostGroup115Status: string;
+  lambdaPidsStatus: string;
+  instruments17G266Status: string;
   totalCommandsSent: number;
   totalValidResponses: number;
   totalErrors: number;
@@ -228,6 +234,8 @@ export const ZERO_TELEMETRY: TelemetryData = {
   boostBar: null,
   boostPsi: null,
   peakBoostBar: null,
+  boostSpecifiedBar: null,
+  boostSpecifiedMbar: null,
   coolantTemp: null,
   iat: null,
   oilTemp: null,
@@ -253,7 +261,8 @@ export const ZERO_TELEMETRY: TelemetryData = {
 };
 
 /**
- * Complete flat catalog of real OBD-II PIDs checked and polled sequentially without priority starvation.
+ * Complete flat catalog of real OBD-II Mode 01 PIDs & verified VAG KWP2000 Service 21 Measuring Blocks
+ * checked and polled sequentially without priority starvation.
  */
 const INITIAL_PID_CATALOG: Array<{ pid: string; name: string }> = [
   { pid: '010C', name: 'Engine RPM (Στροφές Κινητήρα)' },
@@ -267,12 +276,18 @@ const INITIAL_PID_CATALOG: Array<{ pid: string; name: string }> = [
   { pid: '010F', name: 'Intake Air Temp (Θερμοκρασία IAT G42 °C)' },
   { pid: '0110', name: 'MAF Air Flow (Μάζα Αέρα G70 g/s)' },
   { pid: '0111', name: 'Throttle Position (Πεταλούδα G187 %)' },
-  { pid: '0114', name: 'O2 Sensor B1S1 Narrowband (V)' },
+  { pid: '0114', name: 'O2 Sensor B1S1 Narrowband (V & Trim)' },
   { pid: '0115', name: 'O2 Sensor B1S2 After Cat (V)' },
-  { pid: '0124', name: 'Wideband Lambda B1S1 (PID 24 λ & V)' },
+  { pid: '0124', name: 'Wideband Lambda B1S1 (PID 0124 λ & V)' },
+  { pid: '0134', name: 'Wideband Lambda B1S1 Current (PID 0134 λ & mA)' },
   { pid: '0142', name: 'Control Module Voltage (ECU V)' },
   { pid: '0144', name: 'Commanded Equivalence Ratio (λ Spec)' },
   { pid: '015C', name: 'Engine Oil Temperature (Θερμ. Λαδιού °C)' },
+  { pid: '2173', name: 'VAG KWP Group 115 (Boost Specified & Actual mbar)' },
+  { pid: '2176', name: 'VAG KWP Group 118 (IAT, N75 Duty % & Boost Actual)' },
+  { pid: '2102', name: 'VAG KWP Group 002 (Load, Injection Time ms & MAF)' },
+  { pid: '2114', name: 'VAG KWP Group 020 (Knock Retard Cyl 1-4 CF°)' },
+  { pid: '211F', name: 'VAG KWP Group 031 (Lambda Actual & Specified)' },
   { pid: 'ATRV', name: 'Adapter Battery Voltage (Pin 16 V)' },
 ];
 
@@ -299,8 +314,17 @@ class ObdEngine {
   private currentOctane: FuelOctane = 100;
   private peakBoost: number | null = null;
 
-  // Active DTC Faults
+  // Active DTC Faults & Raw HEX Scan Debug Info
   private activeDTCs: DTCFault[] = [];
+  private lastDtcScanDebug: DtcScanDebugInfo = {
+    timestamp: '-',
+    rawMode03Hex: '-',
+    rawMode07Hex: '-',
+    parsedMode03Frames: [],
+    parsedMode07Frames: [],
+    mode03Codes: [],
+    mode07Codes: [],
+  };
 
   // Polling & Mutex Lock
   private isPolling: boolean = false;
@@ -311,6 +335,9 @@ class ObdEngine {
 
   // Set of PIDs confirmed unsupported on the connected ECU so we NEVER waste K-Line time on NO DATA
   private unsupportedPids: Set<string> = new Set();
+
+  // Verified KWP2000 Diagnostic Session flag (true only when 10 89 -> 50 89 or 21 XX -> 61 XX succeeds)
+  private kwpSessionActive: boolean = false;
 
   // Cache of real KWP2000 Measuring Block responses (Service 21 XX) if the ECU/dongle supports raw KWP blocks
   private kwpGroupCache: Record<string, { rawHex: string; cells: [string, string, string, string] | null; updatedAt: string }> = {};
@@ -337,6 +364,11 @@ class ObdEngine {
     supportedPids2140: '-',
     supportedPids4160: '-',
     oilTempPid015CSupported: 'Εκκρεμεί έλεγχος',
+    kwpSessionStatus: 'Εκκρεμεί έλεγχος συνεδρίας KWP2000 (10 89)',
+    kwp1089Response: '-',
+    boostGroup115Status: 'Εκκρεμεί έλεγχος (010B / KWP 2173)',
+    lambdaPidsStatus: 'Εκκρεμεί έλεγχος (0114 / 0124 / 0134 / 0144)',
+    instruments17G266Status: 'Μη ελεγμένο (Πατήστε Έλεγχος G266 17-Instruments)',
     totalCommandsSent: 0,
     totalValidResponses: 0,
     totalErrors: 0,
@@ -369,11 +401,22 @@ class ObdEngine {
     }
     this.debugState.pidTable = tbl;
     this.unsupportedPids.clear();
+    // Do NOT assume KWP2000 Service 21 channels work without a verified KWP2000 diagnostic session!
+    this.unsupportedPids.add('2173');
+    this.unsupportedPids.add('2176');
+    this.unsupportedPids.add('2102');
+    this.unsupportedPids.add('2114');
+    this.unsupportedPids.add('211F');
+    this.kwpSessionActive = false;
     this.recentLatencies = [];
     this.kwpGroupCache = {};
     this.debugState.kLineDroppedFrames = 0;
     this.debugState.supportedSensorsCount = 0;
     this.debugState.oilTempPid015CSupported = 'Εκκρεμεί έλεγχος';
+    this.debugState.kwpSessionStatus = 'Εκκρεμεί έλεγχος συνεδρίας KWP2000 (10 89)';
+    this.debugState.kwp1089Response = '-';
+    this.debugState.boostGroup115Status = 'Εκκρεμεί έλεγχος (010B / KWP 2173)';
+    this.debugState.lambdaPidsStatus = 'Εκκρεμεί έλεγχος (0114 / 0124 / 0134 / 0144)';
   }
 
   public getDebugState(): ObdDebugState {
@@ -451,10 +494,233 @@ class ObdEngine {
     return [...this.activeDTCs];
   }
 
+  public getLastDtcScanDebug(): DtcScanDebugInfo {
+    return {
+      ...this.lastDtcScanDebug,
+      parsedMode03Frames: [...this.lastDtcScanDebug.parsedMode03Frames],
+      parsedMode07Frames: [...this.lastDtcScanDebug.parsedMode07Frames],
+      mode03Codes: [...this.lastDtcScanDebug.mode03Codes],
+      mode07Codes: [...this.lastDtcScanDebug.mode07Codes],
+    };
+  }
+
   public resetPeakBoost(): void {
     this.peakBoost = this.liveTelemetry.boostBar;
     this.liveTelemetry.peakBoostBar = this.liveTelemetry.boostBar;
     this.notifyTelemetry({ ...this.liveTelemetry });
+  }
+
+  /**
+   * Decodes a 2-byte SAE J2012 / ISO 15031-6 DTC pair into its 5-character code (e.g., 01 00 -> P0100, 41 00 -> C0100).
+   */
+  public decodeDtcBytePair(b1: number, b2: number): string | null {
+    if (isNaN(b1) || isNaN(b2)) return null;
+    if (b1 === 0 && b2 === 0) return null; // 00 00 padding
+
+    const typeIndex = (b1 >> 6) & 0x03;
+    const prefix = ['P', 'C', 'B', 'U'][typeIndex];
+    const d1 = (b1 >> 4) & 0x03;
+    const d2 = b1 & 0x0F;
+    const d3 = (b2 >> 4) & 0x0F;
+    const d4 = b2 & 0x0F;
+
+    const code = `${prefix}${d1}${d2.toString(16)}${d3.toString(16)}${d4.toString(16)}`.toUpperCase();
+    if (!/^[PCBU][0-9A-F]{4}$/.test(code) || code === 'P0000') return null;
+    return code;
+  }
+
+  /**
+   * Strict, protocol-aware OBD-II Mode 03 (0x43) & Mode 07 (0x47) K-Line / CAN / ISO-TP Frame Decoder.
+   *
+   * Why the previous implementation produced a false 'C0100':
+   * 1. On ISO 9141-2 / ISO 14230-4 (K-Line, e.g. Audi 1.8T BFB with ATH0 + ATS0), Mode 03 returns 6 payload bytes per frame
+   *    DIRECTLY after the 0x43 service byte: `43 <B1> <B2> <B3> <B4> <B5> <B6>` (3 DTC pairs per frame, NO count byte).
+   *    Skipping `i + 2` misaligned reading by 1 byte, or when a count byte / multi-frame line was present, shifted bytes by 1:
+   *    e.g. `43 01 41 00 ...` (1 DTC = P0100 -> `41 00` read as a DTC pair = `C0100` because 0x41 has bits 7..6 = 01 = 'C'!).
+   * 2. Furthermore, if an echoed command or stray Mode 01 response (`41 00 ...`) appeared in the buffer, reading `41 00` as a DTC pair
+   *    also decoded directly to `C0100`.
+   *
+   * This decoder processes a single mode's response in isolation, splits frames by CR/LF, strips optional K-Line/CAN headers
+   * (`48 6B 10`, `8x F1 10`, `7E8`), handles ISO 15765-4 multi-frame (`0:`, `1:`, `10 xx 43 count`), and accurately distinguishes
+   * K-Line 6-byte DTC frames (`43 D1_HI D1_LO D2_HI D2_LO D3_HI D3_LO`) from count-prefixed frames (`43 <count> D1_HI D1_LO...`).
+   */
+  public decodeObdDtcResponse(
+    rawResp: string,
+    modeHex: '43' | '47'
+  ): {
+    cleanFrames: string[];
+    decoded: Array<{ code: string; pairHex: string; frameHex: string }>;
+  } {
+    const cleanFrames: string[] = [];
+    const decoded: Array<{ code: string; pairHex: string; frameHex: string }> = [];
+
+    if (!rawResp) {
+      return { cleanFrames, decoded };
+    }
+
+    const upper = rawResp
+      .toUpperCase()
+      .replace(/SEARCHING\.\.\./g, '')
+      .replace(/BUS INIT:\s*OK/g, '')
+      .replace(/>/g, '\n');
+
+    if (this.isNoData(upper) && !upper.includes(modeHex)) {
+      return { cleanFrames, decoded };
+    }
+
+    const rawLines = upper
+      .split(/[\r\n]+/)
+      .map(l => l.trim())
+      .filter(l => l.length > 0 && !/^(03|07|OK|NO DATA|STOPPED|\?)$/.test(l));
+
+    // Check if response is ISO-TP segmented (lines starting with 0:, 1:, 2: or 10 xx 43 ...)
+    const isIsoTpColon = rawLines.some(l => /^[0-9A-F]:/i.test(l));
+    if (isIsoTpColon) {
+      const assembledBytes: string[] = [];
+      for (const line of rawLines) {
+        const stripped = line.replace(/^[0-9A-F]:\s*/i, '');
+        const hexOnly = stripped.replace(/[^0-9A-F]/g, '');
+        for (let k = 0; k + 1 < hexOnly.length; k += 2) {
+          assembledBytes.push(hexOnly.substring(k, k + 2));
+        }
+      }
+      const frameStr = assembledBytes.join(' ');
+      if (frameStr) cleanFrames.push(frameStr);
+
+      const sIdx = assembledBytes.indexOf(modeHex);
+      if (sIdx !== -1) {
+        // In ISO-TP / CAN (ISO 15765-4), byte after 43/47 is ALWAYS the DTC count byte
+        const afterService = assembledBytes.slice(sIdx + 1);
+        const dtcData = afterService.length % 2 === 1 ? afterService.slice(1) : afterService.slice(1);
+        for (let j = 0; j + 1 < dtcData.length; j += 2) {
+          const b1 = parseInt(dtcData[j], 16);
+          const b2 = parseInt(dtcData[j + 1], 16);
+          const code = this.decodeDtcBytePair(b1, b2);
+          if (code && !decoded.some(d => d.code === code)) {
+            decoded.push({
+              code,
+              pairHex: `${dtcData[j]} ${dtcData[j + 1]}`,
+              frameHex: frameStr,
+            });
+          }
+        }
+      }
+      return { cleanFrames, decoded };
+    }
+
+    // Standard K-Line (ISO 9141-2 / ISO 14230-4 KWP) or single-line frames
+    for (const line of rawLines) {
+      const hexClean = line.replace(/[^0-9A-F]/g, '');
+      if (hexClean.length < 4 || hexClean.length % 2 !== 0) continue;
+
+      const bytes: string[] = [];
+      for (let k = 0; k < hexClean.length; k += 2) {
+        bytes.push(hexClean.substring(k, k + 2));
+      }
+
+      // Guard against Mode 01 response bleed (`41 00 ...`) when no `43` or `47` is in this frame
+      if (bytes[0] === '41' && !bytes.includes(modeHex)) {
+        continue;
+      }
+
+      // Strip optional K-Line / CAN headers if ATH1 was enabled:
+      // - ISO 9141-2 header: 48 6B 10 43 ...
+      // - KWP2000 header: 8x F1 10 43 ... or C8 F1 10 43 ...
+      // - CAN 11-bit header + PCI length: 07 E8 04 43 ...
+      let serviceIdx = -1;
+      if (bytes[0] === modeHex) {
+        serviceIdx = 0;
+      } else if (bytes.length >= 4 && bytes[0] === '48' && bytes[1] === '6B' && bytes[3] === modeHex) {
+        serviceIdx = 3;
+        // Strip trailing K-Line checksum byte if ATH1 was active
+        if (bytes.length > 4) bytes.pop();
+      } else if (bytes.length >= 4 && bytes[1] === 'F1' && bytes[3] === modeHex) {
+        serviceIdx = 3;
+        if (bytes.length > 4) bytes.pop();
+      } else if (bytes.length >= 3 && bytes[2] === modeHex && (bytes[0] === '07' || parseInt(bytes[0], 16) <= 0x07)) {
+        serviceIdx = 2;
+      } else if (bytes.length >= 2 && bytes[1] === modeHex && parseInt(bytes[0], 16) <= 0x07) {
+        // PCI byte before 43/47 (e.g. `04 43 01 01 71`)
+        serviceIdx = 1;
+      }
+
+      if (serviceIdx === -1) continue;
+
+      const frameFormatted = bytes.join(' ');
+      cleanFrames.push(frameFormatted);
+
+      let payload = bytes.slice(serviceIdx + 1);
+      if (payload.length === 0) continue;
+
+      // Case 1: Multiple concatenated `43` / `47` K-Line frames on a single line (when ELM327 ATL0 joins lines without CR)
+      // Each K-Line Mode 03/07 frame is 7 bytes: `43 <6 data bytes>` (or `43 <frame#>` + 6 data bytes)
+      if (payload.length >= 13 && payload[6] === modeHex) {
+        const subFrames: string[][] = [];
+        let cursor = serviceIdx;
+        while (cursor < bytes.length) {
+          if (bytes[cursor] === modeHex) {
+            subFrames.push(bytes.slice(cursor + 1, cursor + 7));
+            cursor += 7;
+          } else {
+            break;
+          }
+        }
+        for (const sf of subFrames) {
+          for (let j = 0; j + 1 < sf.length; j += 2) {
+            const b1 = parseInt(sf[j], 16);
+            const b2 = parseInt(sf[j + 1], 16);
+            const code = this.decodeDtcBytePair(b1, b2);
+            if (code && !decoded.some(d => d.code === code)) {
+              decoded.push({
+                code,
+                pairHex: `${sf[j]} ${sf[j + 1]}`,
+                frameHex: `${modeHex} ${sf.join(' ')}`,
+              });
+            }
+          }
+        }
+        continue;
+      }
+
+      // Case 2: Determine if `payload[0]` is a DTC count / message-number byte or the first byte of DTC #1:
+      // - If payload has an ODD number of bytes (e.g. `43 00`, `43 01 01 71`, `43 02 01 71 02 99`),
+      //   `payload[0]` is unambiguously the DTC count / frame index byte (1 byte + N*2 DTC bytes).
+      // - If payload has an EVEN number of bytes (e.g. K-Line standard 6 bytes: `43 01 71 02 99 00 00` or `43 00 00 00 00 00 00`),
+      //   the pairs start immediately at `payload[0]`!
+      //   Exception: What if an ECU sends `43 <count> <B1> <B2> ...` padded to an even byte count where `payload[1]` is `41`?
+      if (payload.length === 1 && payload[0] === '00') {
+        // `43 00` -> 0 DTCs
+        continue;
+      }
+
+      if (payload.length % 2 === 1) {
+        const countOrFrameByte = parseInt(payload[0], 16);
+        if (countOrFrameByte === 0) {
+          continue;
+        }
+        payload = payload.slice(1);
+      }
+
+      // Parse 2-byte aligned DTC pairs
+      for (let j = 0; j + 1 < payload.length; j += 2) {
+        // Prevent accidentally decoding a nested `43` / `47` or `41 00` Mode 01 response header as `C0100`
+        if (payload[j] === '41' && payload[j + 1] === '00' && j === 0 && rawLines.length > 1) {
+          continue;
+        }
+        const b1 = parseInt(payload[j], 16);
+        const b2 = parseInt(payload[j + 1], 16);
+        const code = this.decodeDtcBytePair(b1, b2);
+        if (code && !decoded.some(d => d.code === code)) {
+          decoded.push({
+            code,
+            pairHex: `${payload[j]} ${payload[j + 1]}`,
+            frameHex: frameFormatted,
+          });
+        }
+      }
+    }
+
+    return { cleanFrames, decoded };
   }
 
   /**
@@ -480,7 +746,7 @@ class ObdEngine {
   }
 
   /**
-   * Diagnostic Mode 03 & 07: Scan real ECU trouble codes
+   * Diagnostic Mode 03 & 07: Scan real ECU trouble codes with separate K-Line/ISO-TP decoding per mode
    */
   public async scanRealDTCs(): Promise<DTCFault[]> {
     if (this.mode === 'disconnected') {
@@ -489,72 +755,81 @@ class ObdEngine {
     }
 
     try {
-      this.notifyStatus('Ανάγνωση μνήμης σφαλμάτων ECU (OBD Mode 03 & 07)...', this.mode);
+      this.notifyStatus('Ανάγνωση μνήμης σφαλμάτων ECU (Ξεχωριστή αποκωδικοποίηση Mode 03 & Mode 07)...', this.mode);
+
+      const start03 = Date.now();
       const res03 = await this.sendObdCommand('03');
+      const lat03 = Date.now() - start03;
+
+      const parsed03 = this.decodeObdDtcResponse(res03, '43');
+      this.recordCommandLog(
+        '03',
+        res03 || 'NO DATA',
+        parsed03.decoded.length > 0
+          ? `Mode 03 Active DTCs: ${parsed03.decoded.map(d => `${d.code} [${d.pairHex}]`).join(', ')}`
+          : 'Mode 03: 0 Ενεργά Σφάλματα',
+        lat03,
+        false
+      );
+
       await this.sleep(30);
+
+      const start07 = Date.now();
       const res07 = await this.sendObdCommand('07');
+      const lat07 = Date.now() - start07;
 
-      const fullResp = `${res03} ${res07}`.toUpperCase();
+      const parsed07 = this.decodeObdDtcResponse(res07, '47');
+      this.recordCommandLog(
+        '07',
+        res07 || 'NO DATA',
+        parsed07.decoded.length > 0
+          ? `Mode 07 Pending DTCs: ${parsed07.decoded.map(d => `${d.code} [${d.pairHex}]`).join(', ')}`
+          : 'Mode 07: 0 Εκκρεμή Σφάλματα',
+        lat07,
+        false
+      );
 
-      if (
-        fullResp.includes('NO DATA') ||
-        fullResp.includes('UNABLE') ||
-        fullResp.includes('43 00') ||
-        fullResp.includes('4300') ||
-        fullResp.includes('47 00') ||
-        fullResp.includes('4700') ||
-        fullResp.includes('OK') ||
-        fullResp.trim() === ''
-      ) {
-        this.activeDTCs = [];
-        this.notifyStatus('Ολοκληρώθηκε ο έλεγχος. Δεν βρέθηκαν κωδικοί σφάλματος στην ECU (MIL OFF - 0 Σφάλματα).', this.mode);
-        return [];
+      this.lastDtcScanDebug = {
+        timestamp: new Date().toLocaleTimeString('el-GR', { hour12: false }),
+        rawMode03Hex: (res03 || 'NO DATA').trim(),
+        rawMode07Hex: (res07 || 'NO DATA').trim(),
+        parsedMode03Frames: parsed03.cleanFrames,
+        parsedMode07Frames: parsed07.cleanFrames,
+        mode03Codes: parsed03.decoded,
+        mode07Codes: parsed07.decoded,
+      };
+      this.notifyDebug();
+
+      const resultList: DTCFault[] = [];
+
+      // 1. Add Mode 03 (Active / Confirmed DTCs)
+      for (const item of parsed03.decoded) {
+        const translated = lookupAndTranslateDtcToGreek(item.code, 'Active', item.frameHex);
+        resultList.push({
+          ...translated,
+          modeSource: '03',
+          decodedPairHex: item.pairHex,
+          rawHexFrame: item.frameHex,
+        });
       }
 
-      const detectedCodes: string[] = [];
-      const hexTokens = fullResp.replace(/[^0-9A-F]/g, ' ').trim().split(/\s+/).filter(t => t.length === 2);
-
-      for (let i = 0; i < hexTokens.length - 1; i++) {
-        if (hexTokens[i] === '43' || hexTokens[i] === '47') {
-          const startIdx = i + 2;
-          for (let j = startIdx; j < hexTokens.length - 1; j += 2) {
-            const b1 = parseInt(hexTokens[j], 16);
-            const b2 = parseInt(hexTokens[j + 1], 16);
-            if (b1 === 0 && b2 === 0) continue;
-            if (hexTokens[j] === '43' || hexTokens[j] === '47') break;
-
-            const typeDigit = (b1 >> 6) & 0x03;
-            const prefix = ['P', 'C', 'B', 'U'][typeDigit];
-            const d1 = (b1 >> 4) & 0x03;
-            const d2 = b1 & 0x0F;
-            const d3 = (b2 >> 4) & 0x0F;
-            const d4 = b2 & 0x0F;
-
-            const codeStr = `${prefix}${d1}${d2.toString(16)}${d3.toString(16)}${d4.toString(16)}`.toUpperCase();
-            if (/^[PCBU][0-9A-F]{4}$/.test(codeStr) && codeStr !== 'P0000' && !detectedCodes.includes(codeStr)) {
-              detectedCodes.push(codeStr);
-            }
-          }
+      // 2. Add Mode 07 (Pending DTCs) if not already listed under Mode 03
+      for (const item of parsed07.decoded) {
+        const existing = resultList.find(r => r.code === item.code);
+        if (!existing) {
+          const translated = lookupAndTranslateDtcToGreek(item.code, 'Pending', item.frameHex);
+          resultList.push({
+            ...translated,
+            modeSource: '07',
+            decodedPairHex: item.pairHex,
+            rawHexFrame: item.frameHex,
+          });
         }
       }
 
-      const resultList: DTCFault[] = detectedCodes.map(code => {
-        const known = BFB_COMMON_DTCS.find(d => d.code === code);
-        if (known) return { ...known, status: 'Active' };
-        return {
-          code,
-          title: `Κωδικός Σφάλματος ECU ${code}`,
-          description: `Diagnostic trouble code reported by Audi ME7.5 ECU: ${code}`,
-          greekDescription: `Κωδικός βλάβης κινητήρα ${code} από την ECU. Ελέγξτε τις σχετικές σωληνώσεις/αισθητήρες.`,
-          severity: code.startsWith('P03') ? 'critical' : 'medium',
-          system: code.startsWith('P02') ? 'Turbo / Boost' : code.startsWith('P03') ? 'Ignition / Fuel' : 'Sensors',
-          status: 'Active'
-        };
-      });
-
       this.activeDTCs = resultList;
       if (resultList.length === 0) {
-        this.notifyStatus('Ολοκληρώθηκε ο έλεγχος. Δεν βρέθηκαν κωδικοί σφάλματος (MIL OFF).', this.mode);
+        this.notifyStatus('Ολοκληρώθηκε ο έλεγχος. Δεν βρέθηκαν κωδικοί σφάλματος (MIL OFF - 0 Σφάλματα).', this.mode);
       } else {
         this.notifyStatus(`Ολοκληρώθηκε ο έλεγχος. Εντοπίστηκαν ${resultList.length} πραγματικοί κωδικοί βλάβης.`, this.mode);
       }
@@ -813,6 +1088,13 @@ class ObdEngine {
   public async initializeAndLockEcu(forcedProtocolCmd?: string): Promise<boolean> {
     try {
       this.unsupportedPids.clear();
+      // Keep KWP2000 Service 21 channels disabled until confirmed by a real 61 XX response
+      this.unsupportedPids.add('2173');
+      this.unsupportedPids.add('2176');
+      this.unsupportedPids.add('2102');
+      this.unsupportedPids.add('2114');
+      this.unsupportedPids.add('211F');
+      this.kwpSessionActive = false;
       this.debugState.kLineDroppedFrames = 0;
       this.debugState.kLineTimingVerified = false;
 
@@ -909,9 +1191,10 @@ class ObdEngine {
       this.notifyDebug();
 
       if (locked) {
-        this.notifyStatus(`ECU Κλειδώθηκε (${this.debugState.protocolName})! Ανάγνωση υποστηριζόμενων αισθητήρων...`, this.mode);
+        this.notifyStatus(`ECU Κλειδώθηκε (${this.debugState.protocolName})! Έλεγχος Bitmasks (0100 / 0120 / 0140)...`, this.mode);
 
         // 5. Discover Supported PIDs in 0120 (21-40) and 0140 (41-60)
+        // NOTE: Do NOT mark 0121..0140 or 0141..0160 as unsupported merely because 0120/0140 missed a single K-Line frame!
         const p20 = await this.sendObdCommand('0120');
         if (p20.includes('41')) {
           this.debugState.supportedPids2140 = p20;
@@ -925,13 +1208,47 @@ class ObdEngine {
           this.debugState.supportedPids4160 = p40;
           this.applyPidSupportBitmask(p40, 0x41);
         } else {
-          this.debugState.supportedPids4160 = 'NO DATA';
-          this.unsupportedPids.add('0142');
-          this.unsupportedPids.add('0144');
+          this.debugState.supportedPids4160 = p40 || 'NO DATA';
         }
 
-        // 6. Explicit Check for PID 015C (Engine Oil Temperature) as requested!
+        // 6. Explicit Individual Verification of Lambda & O2 PIDs (0114, 0115, 0124, 0134, 0144)
+        // Even if 0120/0140 bitmask had a K-Line turnaround glitch, we test each Lambda/O2 PID directly against the ECU!
+        this.notifyStatus('Ξεχωριστός έλεγχος αισθητήρων Lambda & O2 (PIDs 0114, 0115, 0124, 0134, 0144)...', this.mode);
+        const lambdaSummary: string[] = [];
+
+        this.unsupportedPids.delete('0114');
+        await this.pollSinglePidIfSupported('0114');
+        if (!this.unsupportedPids.has('0114')) lambdaSummary.push('0114:OK');
+
+        this.unsupportedPids.delete('0115');
+        await this.pollSinglePidIfSupported('0115');
+        if (!this.unsupportedPids.has('0115')) lambdaSummary.push('0115:OK');
+
+        this.unsupportedPids.delete('0124');
+        await this.pollSinglePidIfSupported('0124');
+        if (!this.unsupportedPids.has('0124')) lambdaSummary.push('0124(λ+V):OK');
+
+        this.unsupportedPids.delete('0134');
+        await this.pollSinglePidIfSupported('0134');
+        if (!this.unsupportedPids.has('0134')) lambdaSummary.push('0134(λ+mA):OK');
+
+        this.unsupportedPids.delete('0144');
+        await this.pollSinglePidIfSupported('0144');
+        if (!this.unsupportedPids.has('0144')) lambdaSummary.push('0144(λSpec):OK');
+
+        this.debugState.lambdaPidsStatus =
+          lambdaSummary.length > 0
+            ? `Ενεργά: ${lambdaSummary.join(', ')}`
+            : 'Κανένα από τα 0114/0124/0134/0144 δεν απάντησε';
+
+        // 7. Explicit Check for PID 010B (Standard MAP / Boost)
+        this.unsupportedPids.delete('010B');
+        await this.pollSinglePidIfSupported('010B');
+        const map010BSupported = !this.unsupportedPids.has('010B');
+
+        // 8. Explicit Check for PID 015C (Engine Oil Temperature via 01-Engine)
         this.notifyStatus('Έλεγχος υποστήριξης πραγματικής θερμοκρασίας λαδιού (PID 015C)...', this.mode);
+        this.unsupportedPids.delete('015C');
         const oilResp = await this.executeTrackedPid('015C', 'Engine Oil Temperature (Θερμ. Λαδιού °C)', (raw) => {
           const val = this.parseOilTemp(raw);
           if (val !== null) {
@@ -946,21 +1263,23 @@ class ObdEngine {
           this.debugState.oilTempPid015CSupported = `ΝΑΙ (41 5C -> ${oilResp})`;
         } else {
           this.unsupportedPids.add('015C');
-          this.liveTelemetry.oilTemp = null;
-          this.debugState.oilTempPid015CSupported = 'ΟΧΙ (NO DATA -> N/A)';
+          this.debugState.oilTempPid015CSupported = 'ΟΧΙ στο 01-Engine (015C -> NO DATA)';
         }
 
         // Oil pressure has no standard OBD-II Mode 01 sensor on BFB -> strictly null (N/A)
         this.liveTelemetry.oilPressure = null;
 
-        // 7. Test & Verify ATAT2 + ATST 19 on K-Line to ensure ZERO lost responses!
+        // 9. Attempt Real VAG KWP2000 Diagnostic Session (10 89) & Probe VAG Groups 115 (2173) / 118 (2176) / 002 (2102) / 020 (2114) / 031 (211F)
+        await this.probeVagKwp2000SessionAndBlocks(map010BSupported);
+
+        // 10. Test & Verify ATAT2 + ATST 19 on K-Line to ensure ZERO lost responses!
         await this.verifyAndApplyOptimalKLineTiming();
 
         // Update count of active supported sensors
         this.updateSupportedSensorCount();
 
         this.notifyStatus(
-          `ECU Κλειδώθηκε (${this.debugState.protocolName}) • ${this.debugState.supportedSensorsCount} υποστηριζόμενοι αισθητήρες • ${this.debugState.kLineTimingConfig}`,
+          `ECU Κλειδώθηκε (${this.debugState.protocolName}) • ${this.debugState.supportedSensorsCount} ενεργά κανάλια • ${this.debugState.kLineTimingConfig}`,
           this.mode
         );
       } else {
@@ -977,6 +1296,152 @@ class ObdEngine {
       this.notifyDebug();
       return false;
     }
+  }
+
+  /**
+   * Attempts to open a real VAG KWP2000 Diagnostic Session (Service 10 89 -> Positive Response 50 89)
+   * on the active K-Line connection and probes whether `21 73` (Group 115 Boost Specified/Actual)
+   * and `21 76` (Group 118 N75/Boost) return genuine `61 73` / `61 76` Measuring Block frames.
+   *
+   * Strictly NEVER assumes `2173` works unless a verified `61 73` response is received from the ECU!
+   */
+  private async probeVagKwp2000SessionAndBlocks(map010BSupported: boolean): Promise<void> {
+    this.notifyStatus('Έλεγχος συνεδρίας VAG KWP2000 (10 89) & Group 115/118 (2173/2176)...', this.mode);
+
+    const start1089 = Date.now();
+    const resp1089 = await this.sendObdCommand('1089');
+    const lat1089 = Date.now() - start1089;
+    const clean1089 = (resp1089 || '').toUpperCase().replace(/[^0-9A-F]/g, '');
+    const sessionConfirmed = clean1089.includes('5089') || clean1089.includes('50');
+
+    this.debugState.kwp1089Response = (resp1089 || 'NO DATA').trim();
+    this.recordCommandLog(
+      '1089',
+      resp1089 || 'NO DATA',
+      sessionConfirmed
+        ? 'KWP2000 Diagnostic Session 0x89 ΕΠΙΒΕΒΑΙΩΘΗΚΕ (50 89)'
+        : 'KWP2000 10 89 απορρίφθηκε (ISO 9141-2 OBD Mode)',
+      lat1089,
+      !sessionConfirmed
+    );
+
+    // Now test Group 115 (`2173`) directly to see if the ECU answers `61 73 ...`
+    this.unsupportedPids.delete('2173');
+    const g115Res = await this.executeTrackedPid('2173', 'VAG KWP Group 115 (Boost Specified & Actual mbar)', (raw) => {
+      return this.parseAndApplyKwpGroup('73', '115', raw);
+    });
+
+    if (g115Res !== null) {
+      this.kwpSessionActive = true;
+      this.unsupportedPids.delete('2173');
+      this.debugState.kwpSessionStatus = `ΕΝΕΡΓΗ (KWP2000 Service 21 Επιβεβαιώθηκε • 1089: ${this.debugState.kwp1089Response})`;
+      this.debugState.boostGroup115Status = `ΕΝΕΡΓΟ μέσω VAG KWP Group 115 (61 73 -> ${g115Res})`;
+
+      // Since KWP2000 Service 21 is confirmed on this protocol, also probe Group 118 (2176), 002 (2102), 020 (2114), 031 (211F)
+      for (const kwpItem of [
+        { pid: '2176', hex: '76', num: '118', label: 'VAG KWP Group 118 (IAT, N75 Duty % & Boost Actual)' },
+        { pid: '2102', hex: '02', num: '002', label: 'VAG KWP Group 002 (Load, Injection Time ms & MAF)' },
+        { pid: '2114', hex: '14', num: '020', label: 'VAG KWP Group 020 (Knock Retard Cyl 1-4 CF°)' },
+        { pid: '211F', hex: '1F', num: '031', label: 'VAG KWP Group 031 (Lambda Actual & Specified)' },
+      ]) {
+        this.unsupportedPids.delete(kwpItem.pid);
+        const res = await this.executeTrackedPid(kwpItem.pid, kwpItem.label, (raw) =>
+          this.parseAndApplyKwpGroup(kwpItem.hex, kwpItem.num, raw)
+        );
+        if (res === null) {
+          this.unsupportedPids.add(kwpItem.pid);
+        }
+      }
+    } else {
+      // 2173 did not return 61 73 -> keep all 21XX channels in unsupportedPids so polling stays 100% fast!
+      this.kwpSessionActive = false;
+      this.unsupportedPids.add('2173');
+      this.unsupportedPids.add('2176');
+      this.unsupportedPids.add('2102');
+      this.unsupportedPids.add('2114');
+      this.unsupportedPids.add('211F');
+
+      this.debugState.kwpSessionStatus = sessionConfirmed
+        ? `1089 -> ${this.debugState.kwp1089Response}, αλλά 2173 -> NO DATA`
+        : `Μη διαθέσιμη σε ISO 9141-2 (${this.debugState.protocolName}) • 1089 -> ${this.debugState.kwp1089Response}`;
+
+      this.debugState.boostGroup115Status = map010BSupported
+        ? 'Boost Actual ενεργό μέσω PID 010B • Boost Specified απαιτεί KWP2000 2173 (Μη υποστηριζόμενο σε ISO 9141-2)'
+        : 'Μη διαθέσιμο: Το PID 010B (Bitmask 0100) και το KWP 2173 επέστρεψαν NO DATA στο ενεργό πρωτόκολλο';
+    }
+  }
+
+  /**
+   * Probes 17-Instruments (Kombiinstrument - Address 0x17) for real Oil Temperature sensor G266 (Group 050 / 21 32).
+   * Safely pauses Engine polling, configures KWP2000 target header for 17-Instruments (ATSH 81 17 F1 & ATSP5/ATSP4),
+   * checks `10 89` + `21 32` (Group 050) and `21 03` (Group 003), and then cleanly restores the 01-Engine connection.
+   * Never creates a fake oil temperature!
+   */
+  public async probe17InstrumentsOilTempG266(): Promise<string> {
+    if (this.mode === 'disconnected') {
+      const msg = 'Απαιτείται ενεργή σύνδεση με το OBD-II dongle.';
+      this.notifyError(msg);
+      return msg;
+    }
+
+    const wasPolling = this.isPolling;
+    this.stopRealObdPolling();
+    await this.sleep(150);
+
+    const savedProtoNum = (this.debugState.protocolNum || '').replace(/[^0-9A-F]/gi, '');
+    this.notifyStatus('Δοκιμή ανάγνωσης G266 (Θερμ. Λαδιού) από 17-Instruments (Καντράν)...', this.mode);
+    this.debugState.instruments17G266Status = 'Σε εξέλιξη σύνδεση με 17-Instruments...';
+    this.notifyDebug();
+
+    let resultMsg = '';
+    try {
+      // Configure KWP2000 header targeting 17-Instruments (physical address 0x17, tester 0xF1)
+      await this.sendObdCommand('ATSH 81 17 F1');
+      await this.sendObdCommand('ATIIA 17'); // ISO 5-baud init address 0x17 (if supported by ELM v1.4+)
+      await this.sendObdCommand('ATSP5');
+
+      const r1089 = await this.sendObdCommand('1089');
+      const r2132 = await this.sendObdCommand('2132'); // Group 050 (0x32): Speed, RPM, Oil Temp G266, Coolant
+
+      this.recordCommandLog(
+        '17-INST:2132',
+        `1089->${r1089 || 'NO DATA'} | 2132->${r2132 || 'NO DATA'}`,
+        'Έλεγχος G266 μέσω 17-Instruments (Group 050)',
+        0,
+        !r2132.includes('61')
+      );
+
+      const cells50 = this.decodeKwpBlockResponse(r2132, '32');
+      if (cells50) {
+        // In 17-Instruments Group 050, Field 3 (cells50[2]) or Field 4 is Oil Temperature G266 in °C
+        const oilStr = cells50.find(c => c.includes('°C')) || cells50[2];
+        const parsedTemp = parseFloat(oilStr);
+        if (!isNaN(parsedTemp) && parsedTemp > -30 && parsedTemp < 180) {
+          this.liveTelemetry.oilTemp = Math.round(parsedTemp);
+          this.pushLiveTelemetryUpdate();
+          resultMsg = `ΕΠΙΤΥΧΙΑ 17-Instruments Group 050 (2132): G266 = ${Math.round(parsedTemp)} °C [Raw: ${r2132.trim()}]`;
+        } else {
+          resultMsg = `17-Instruments απάντησε (${ cells50.join(' | ') }), αλλά δεν βρέθηκε έγκυρη θερμοκρασία G266.`;
+        }
+      } else {
+        resultMsg = `Αδύνατη ανάγνωση 17-Instruments με ELM327 (1089: "${(r1089 || 'NO DATA').trim()}", 2132: "${(r2132 || 'NO DATA').trim()}"). Στο Audi A4 B7 (8E) το καντράν (17-Instruments) χρησιμοποιεί αποκλειστικό VAG KW1281 (5-baud @ 0x17) ή TP2.0 CAN που δεν υποστηρίζεται από ELM327. Η θερμοκρασία λαδιού παραμένει αυστηρά N/A.`;
+      }
+    } catch (e: any) {
+      resultMsg = `Σφάλμα κατά τον έλεγχο 17-Instruments: ${e.message || e}`;
+    } finally {
+      // Restore standard 01-Engine OBD-II addressing and protocol
+      await this.sendObdCommand('ATIIA 33');
+      await this.sendObdCommand('ATSH 68 6A F1');
+      const restoreCmd = savedProtoNum ? `ATSP${savedProtoNum.charAt(savedProtoNum.length - 1)}` : 'ATSP3';
+      await this.initializeAndLockEcu(restoreCmd);
+      this.debugState.instruments17G266Status = resultMsg;
+      this.notifyDebug();
+      if (wasPolling) {
+        this.startRealObdPolling();
+      }
+    }
+
+    return resultMsg;
   }
 
   /**
@@ -1430,7 +1895,7 @@ class ObdEngine {
         break;
 
       case '0124':
-        await this.executeTrackedPid('0124', 'Wideband Lambda B1S1 (PID 24 λ & V)', (raw) => {
+        await this.executeTrackedPid('0124', 'Wideband Lambda B1S1 (PID 0124 λ & V)', (raw) => {
           const p = this.parseLambda24(raw);
           if (p !== null) {
             this.liveTelemetry.lambda = p.lambda;
@@ -1438,6 +1903,19 @@ class ObdEngine {
             this.liveTelemetry.o2SensorVoltage = p.voltage;
             updated = true;
             return `λ=${p.lambda.toFixed(3)} (${p.voltage.toFixed(2)}V)`;
+          }
+          return null;
+        });
+        break;
+
+      case '0134':
+        await this.executeTrackedPid('0134', 'Wideband Lambda B1S1 Current (PID 0134 λ & mA)', (raw) => {
+          const p = this.parseLambda34(raw);
+          if (p !== null) {
+            this.liveTelemetry.lambda = p.lambda;
+            this.liveTelemetry.afr = Math.round(p.lambda * 14.7 * 10) / 10;
+            updated = true;
+            return `λ=${p.lambda.toFixed(3)} (${p.currentMa >= 0 ? '+' : ''}${p.currentMa.toFixed(2)}mA)`;
           }
           return null;
         });
@@ -1478,6 +1956,56 @@ class ObdEngine {
             return `${val} °C`;
           }
           return null;
+        });
+        break;
+
+      case '2173':
+        await this.executeTrackedPid('2173', 'VAG KWP Group 115 (Boost Specified & Actual mbar)', (raw) => {
+          const res = this.parseAndApplyKwpGroup('73', '115', raw);
+          if (res !== null) {
+            updated = true;
+          }
+          return res;
+        });
+        break;
+
+      case '2176':
+        await this.executeTrackedPid('2176', 'VAG KWP Group 118 (IAT, N75 Duty % & Boost Actual)', (raw) => {
+          const res = this.parseAndApplyKwpGroup('76', '118', raw);
+          if (res !== null) {
+            updated = true;
+          }
+          return res;
+        });
+        break;
+
+      case '2102':
+        await this.executeTrackedPid('2102', 'VAG KWP Group 002 (Load, Injection Time ms & MAF)', (raw) => {
+          const res = this.parseAndApplyKwpGroup('02', '002', raw);
+          if (res !== null) {
+            updated = true;
+          }
+          return res;
+        });
+        break;
+
+      case '2114':
+        await this.executeTrackedPid('2114', 'VAG KWP Group 020 (Knock Retard Cyl 1-4 CF°)', (raw) => {
+          const res = this.parseAndApplyKwpGroup('14', '020', raw);
+          if (res !== null) {
+            updated = true;
+          }
+          return res;
+        });
+        break;
+
+      case '211F':
+        await this.executeTrackedPid('211F', 'VAG KWP Group 031 (Lambda Actual & Specified)', (raw) => {
+          const res = this.parseAndApplyKwpGroup('1F', '031', raw);
+          if (res !== null) {
+            updated = true;
+          }
+          return res;
         });
         break;
 
@@ -1638,6 +2166,15 @@ class ObdEngine {
     return { lambda, voltage };
   }
 
+  private parseLambda34(resp: string): { lambda: number; currentMa: number } | null {
+    const b = this.extractPidBytes(resp, '34', 4);
+    if (!b) return null;
+    const lambda = Math.round((((b[0] * 256) + b[1]) / 32768) * 1000) / 1000;
+    const currentMa = Math.round(((((b[2] * 256) + b[3]) / 256) - 128) * 100) / 100;
+    if (lambda < 0.4 || lambda > 2.5) return null;
+    return { lambda, currentMa };
+  }
+
   private parseO2Sensor(resp: string, pidHex: '14' | '15'): { voltage: number; trim: number } | null {
     const b2 = this.extractPidBytes(resp, pidHex, 2);
     if (b2) {
@@ -1705,30 +2242,157 @@ class ObdEngine {
     return [cells[0], cells[1], cells[2], cells[3]];
   }
 
+  /**
+   * Complete VAG KWP1281 / KWP2000 Bosch ME7.5 Measuring Block Formula Table
+   */
   private decodeKwpCellFormula(formula: number, a: number, b: number): string {
     switch (formula) {
       case 0x01:
-        return `${Math.round(0.2 * a * b)}`; // RPM
+        return `${Math.round(0.2 * a * b)} /min`; // RPM
       case 0x02:
-        return `${(a * 0.002 * b).toFixed(1)} %`; // Load %
+        return `${(a * 0.002 * b).toFixed(1)} %`; // Load / Duty %
+      case 0x03:
+        return `${(0.002 * a * b).toFixed(1)} deg`; // Throttle / Angle
+      case 0x04:
+        return `${(Math.abs(b - 127) * 0.01 * a).toFixed(1)} °`; // Ignition Timing / Retard
       case 0x05:
-        return `${Math.round((a * (b - 100) * 0.1) * 10) / 10} °C`; // Temp °C
-      case 0x08:
-        return `${Math.round((0.1 * a * b - 273.1) * 10) / 10} °C`;
+        return `${Math.round((a * (b - 100) * 0.1) * 10) / 10} °C`; // Temperature °C
+      case 0x06:
       case 0x0C:
-        return `${((0.001 * a * b)).toFixed(2)} V`;
+      case 0x15:
+        return `${(0.001 * a * b).toFixed(3)} V`; // Voltage V
+      case 0x07:
+        return `${Math.round(0.01 * a * b)} km/h`; // Vehicle Speed km/h
+      case 0x08:
+        return `${Math.round((0.1 * a * b - 273.1) * 10) / 10} °C`; // Temperature °C
+      case 0x0F:
+      case 0x16:
+        return `${(0.001 * a * b).toFixed(2)} ms`; // Injection Time ms
+      case 0x10:
+        return `b${b.toString(2).padStart(8, '0')}`; // Bitmask status
       case 0x12:
-        return `${Math.round(0.04 * a * b)} mbar`; // Absolute Pressure mbar
+        return `${Math.round(0.04 * a * b)} mbar`; // Absolute Pressure mbar (Boost Specified / Actual)
+      case 0x14:
+        return `${((a * (b - 128)) / 128).toFixed(1)} %`; // Fuel Trim / Adaptation %
       case 0x1A:
         return `${(b - a)} °C`;
+      case 0x1E:
+      case 0x25:
+        return `${(0.0001 * a * b).toFixed(3)} λ`; // Lambda Factor
+      case 0x21:
+        return `${(b === 0 ? 0 : (100 * a) / b).toFixed(1)} %`; // N75 Duty Cycle %
+      case 0x26:
+        return `${((b - 128) * 0.001 * a).toFixed(1)}°`; // Knock Retard CF°
+      case 0x31:
+        return `${((a * b) / 360).toFixed(2)} g/s`; // MAF Air Mass g/s
       default:
         return `0x${formula.toString(16).toUpperCase()}:${a},${b}`;
     }
   }
 
   /**
+   * Parses a real KWP2000 Service 21 (`61 <groupHex> ...`) response, caches the 4 cells,
+   * and maps real physical values (Boost Specified, Boost Actual, N75, Injection Time, Knock Retard, Lambda)
+   * directly into `this.liveTelemetry`.
+   */
+  private parseAndApplyKwpGroup(groupHex: string, groupNum: string, rawHex: string): string | null {
+    const cells = this.decodeKwpBlockResponse(rawHex, groupHex);
+    if (!cells) return null;
+
+    this.kwpGroupCache[groupNum] = {
+      rawHex: rawHex.trim(),
+      cells,
+      updatedAt: new Date().toLocaleTimeString('el-GR', { hour12: false }),
+    };
+
+    const numVal = (s: string): number | null => {
+      const m = s.match(/-?[0-9]+(\.[0-9]+)?/);
+      return m ? parseFloat(m[0]) : null;
+    };
+
+    if (groupNum === '115') {
+      // Group 115: [RPM, Load %, Boost Specified mbar, Boost Actual mbar]
+      const rpm = numVal(cells[0]);
+      const load = numVal(cells[1]);
+      const specMbar = numVal(cells[2]);
+      const actMbar = numVal(cells[3]);
+      if (rpm !== null) this.liveTelemetry.rpm = Math.round(rpm);
+      if (load !== null) this.liveTelemetry.engineLoad = load;
+      if (specMbar !== null && specMbar > 100) {
+        this.liveTelemetry.boostSpecifiedMbar = Math.round(specMbar);
+        this.liveTelemetry.boostSpecifiedBar = Math.round(((specMbar - 1013) / 1000) * 100) / 100;
+      }
+      if (actMbar !== null && actMbar > 100) {
+        const boostBar = Math.round(((actMbar - 1013) / 1000) * 100) / 100;
+        this.liveTelemetry.boostBar = boostBar;
+        this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
+        if (this.peakBoost === null || boostBar > this.peakBoost) {
+          this.peakBoost = boostBar;
+          this.liveTelemetry.peakBoostBar = boostBar;
+        }
+      }
+      return `Spec:${cells[2]} | Act:${cells[3]}`;
+    }
+
+    if (groupNum === '118') {
+      // Group 118: [RPM, IAT °C, N75 Duty %, Boost Actual mbar]
+      const iat = numVal(cells[1]);
+      const n75 = numVal(cells[2]);
+      const actMbar = numVal(cells[3]);
+      if (iat !== null) this.liveTelemetry.iat = Math.round(iat);
+      if (n75 !== null) this.liveTelemetry.n75DutyCycle = Math.round(n75 * 10) / 10;
+      if (actMbar !== null && actMbar > 100) {
+        const boostBar = Math.round(((actMbar - 1013) / 1000) * 100) / 100;
+        this.liveTelemetry.boostBar = boostBar;
+        this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
+      }
+      return `N75:${cells[2]} | Boost:${cells[3]}`;
+    }
+
+    if (groupNum === '002') {
+      // Group 002: [RPM, Load %, Injection Time ms, MAF g/s]
+      const inj = numVal(cells[2]);
+      const maf = numVal(cells[3]);
+      if (inj !== null) this.liveTelemetry.injectionTimeMs = inj;
+      if (maf !== null) this.liveTelemetry.mafGramsPerSec = maf;
+      return `Inj:${cells[2]} | MAF:${cells[3]}`;
+    }
+
+    if (groupNum === '020') {
+      // Group 020: [Cyl 1 CF, Cyl 2 CF, Cyl 3 CF, Cyl 4 CF]
+      const c1 = numVal(cells[0]);
+      const c2 = numVal(cells[1]);
+      const c3 = numVal(cells[2]);
+      const c4 = numVal(cells[3]);
+      this.liveTelemetry.knockRetard = [
+        c1 !== null ? Math.abs(c1) : null,
+        c2 !== null ? Math.abs(c2) : null,
+        c3 !== null ? Math.abs(c3) : null,
+        c4 !== null ? Math.abs(c4) : null,
+      ];
+      return `${cells[0]} | ${cells[1]} | ${cells[2]} | ${cells[3]}`;
+    }
+
+    if (groupNum === '031') {
+      // Group 031: [Lambda Actual, Lambda Specified, ...]
+      const lamAct = numVal(cells[0]);
+      const lamSpec = numVal(cells[1]);
+      if (lamAct !== null && lamAct > 0.4 && lamAct < 2.5) {
+        this.liveTelemetry.lambda = lamAct;
+        this.liveTelemetry.afr = Math.round(lamAct * 14.7 * 10) / 10;
+      }
+      if (lamSpec !== null && lamSpec > 0.4 && lamSpec < 2.5) {
+        this.liveTelemetry.lambdaSpecified = lamSpec;
+      }
+      return `λAct:${cells[0]} | λSpec:${cells[1]}`;
+    }
+
+    return cells.join(' | ');
+  }
+
+  /**
    * Actively queries a VAG Measuring Block Group (001-255) from the connected ECU:
-   * 1. Sends KWP2000 Service 21 (<21 XX>) to check if direct KWP block reading is supported by the active protocol.
+   * 1. Attempts KWP2000 diagnostic session (`10 89`) if not yet active, then sends Service 21 (`21 XX`).
    * 2. Also polls the real OBD-II Mode 01 PIDs mapped to that group so values are freshly read from the ECU.
    */
   public async queryVagGroupFromEcu(rawGroupNum: number | string): Promise<VagBlockGroup> {
@@ -1737,25 +2401,39 @@ class ObdEngine {
     const groupHex = numInt.toString(16).padStart(2, '0').toUpperCase();
 
     if (this.mode === 'bluetooth' || this.mode === 'wifi') {
+      if (!this.kwpSessionActive) {
+        const r1089 = await this.sendObdCommand('1089');
+        if (r1089 && r1089.replace(/\s+/g, '').includes('50')) {
+          this.kwpSessionActive = true;
+        }
+      }
+
       const kwpCmd = `21${groupHex}`;
       const start = Date.now();
       const rawKwp = await this.sendObdCommand(kwpCmd);
       const latency = Date.now() - start;
+      const appliedSummary = this.parseAndApplyKwpGroup(groupHex, groupNum, rawKwp);
       const decodedCells = this.decodeKwpBlockResponse(rawKwp, groupHex);
 
       this.recordCommandLog(
         kwpCmd,
         rawKwp || 'NO DATA',
-        decodedCells ? `VAG Group ${groupNum} KWP OK` : `VAG Group ${groupNum} (Standard OBD-II Mode 01 Mapping)`,
+        decodedCells
+          ? `VAG Group ${groupNum} KWP2000 OK (${appliedSummary})`
+          : `VAG Group ${groupNum}: KWP 21${groupHex} -> NO DATA (Χρήση OBD-II Mode 01 PIDs)`,
         latency,
         !decodedCells
       );
 
-      this.kwpGroupCache[groupNum] = {
-        rawHex: rawKwp || 'NO DATA',
-        cells: decodedCells,
-        updatedAt: new Date().toLocaleTimeString('el-GR', { hour12: false }),
-      };
+      if (!decodedCells) {
+        this.kwpGroupCache[groupNum] = {
+          rawHex: rawKwp || 'NO DATA',
+          cells: null,
+          updatedAt: new Date().toLocaleTimeString('el-GR', { hour12: false }),
+        };
+      } else {
+        this.pushLiveTelemetryUpdate();
+      }
 
       // Also refresh the real Mode 01 PIDs that belong to this group right now
       const groupPids = this.getMode01PidsForVagGroup(numInt);
@@ -1861,6 +2539,10 @@ class ObdEngine {
     const fmtO2B1S1 = t.o2SensorVoltage !== null ? `${t.o2SensorVoltage.toFixed(3)} V` : 'N/A';
     const fmtO2B1S2 = t.o2SensorAfterVoltage !== null ? `${t.o2SensorAfterVoltage.toFixed(3)} V` : 'N/A';
     const fmtMapMbar = t.boostBar !== null ? `${Math.round((t.boostBar + 1.013) * 1000)} mbar` : 'N/A';
+    const fmtBoostSpecMbar =
+      t.boostSpecifiedMbar !== undefined && t.boostSpecifiedMbar !== null
+        ? `${Math.round(t.boostSpecifiedMbar)} mbar`
+        : 'N/A';
     const fmtInjTime = t.injectionTimeMs !== null ? `${t.injectionTimeMs.toFixed(2)} ms` : 'N/A';
     const fmtN75 = t.n75DutyCycle !== null ? `${t.n75DutyCycle} %` : 'N/A';
 
@@ -1967,14 +2649,14 @@ class ObdEngine {
         return {
           groupNum: '031',
           title: 'Group 031: Wideband Lambda & O2 Sensors',
-          greekTitle: 'Ομάδα 031: Λάμδα Πραγματικό (0124), Ζητούμενο (0144), Τάση B1S1 & B1S2 (0115)',
-          description: 'Real Wideband Lambda (PID 0124), Commanded Lambda (PID 0144), and Post-Cat O2 (PID 0115).',
+          greekTitle: 'Ομάδα 031: Λάμδα Πραγματικό (0124/0134), Ζητούμενο (0144), Τάση B1S1 (0114/0124) & B1S2 (0115)',
+          description: 'Real Wideband Lambda (PID 0124/0134), Commanded Lambda (PID 0144), Pre-Cat O2 (0114/0124) and Post-Cat O2 (PID 0115).',
           rawHexResponse: rawNote,
-          sourceMode: 'OBD-II Mode 01',
+          sourceMode: 'OBD-II Mode 01 / KWP 211F',
           fields: [
-            { label: 'Lambda Actual (0124)', value: fmtLambda, unit: 'λ', normalRange: '0.80 - 1.05', sourcePid: '0124' },
+            { label: 'Lambda Actual (0124/0134)', value: fmtLambda, unit: 'λ', normalRange: '0.80 - 1.05', sourcePid: '0124' },
             { label: 'Lambda Specified (0144)', value: fmtLambdaSpec, unit: 'λ', normalRange: '0.82 - 1.00', sourcePid: '0144' },
-            { label: 'O2 B1S1 Voltage (0124)', value: fmtO2B1S1, unit: 'V', normalRange: '1.20 - 2.00 V', sourcePid: '0124' },
+            { label: 'O2 B1S1 Voltage (0114/0124)', value: fmtO2B1S1, unit: 'V', normalRange: '0.10 - 2.00 V', sourcePid: '0114/0124' },
             { label: 'O2 B1S2 After Cat (0115)', value: fmtO2B1S2, unit: 'V', normalRange: '0.05 - 0.85 V', sourcePid: '0115' },
           ]
         };
@@ -1984,15 +2666,15 @@ class ObdEngine {
         return {
           groupNum,
           title: `Group ${groupNum}: Fuel Trim Adaptation (STFT & LTFT)`,
-          greekTitle: `Ομάδα ${groupNum}: Διορθώσεις Καυσίμου STFT (0106), LTFT (0107) & Αισθητήρας Λάμδα (0124)`,
+          greekTitle: `Ομάδα ${groupNum}: Διορθώσεις Καυσίμου STFT (0106), LTFT (0107) & Αισθητήρας Λάμδα (0114/0124)`,
           description: 'Real Short-Term and Long-Term Fuel Trims from PIDs 0106 and 0107.',
           rawHexResponse: rawNote,
           sourceMode: 'OBD-II Mode 01 (100% Real)',
           fields: [
             { label: 'Short Term Trim (0106)', value: fmtStft, unit: '%', normalRange: '-10.0 to +10.0%', sourcePid: '0106', isWarning: t.shortTermFuelTrim !== null && Math.abs(t.shortTermFuelTrim) > 12 },
             { label: 'Long Term Trim (0107)', value: fmtLtft, unit: '%', normalRange: '-10.0 to +10.0%', sourcePid: '0107', isWarning: t.longTermFuelTrim !== null && Math.abs(t.longTermFuelTrim) > 12 },
-            { label: 'O2 Sensor Voltage (0124)', value: fmtO2B1S1, unit: 'V', normalRange: '1.20 - 2.00 V', sourcePid: '0124' },
-            { label: 'Lambda Actual (0124)', value: fmtLambda, unit: 'λ', normalRange: '0.80 - 1.05', sourcePid: '0124' },
+            { label: 'O2 Sensor Voltage (0114/0124)', value: fmtO2B1S1, unit: 'V', normalRange: '0.10 - 2.00 V', sourcePid: '0114/0124' },
+            { label: 'Lambda Actual (0124/0134)', value: fmtLambda, unit: 'λ', normalRange: '0.80 - 1.05', sourcePid: '0124' },
           ]
         };
 
@@ -2016,15 +2698,15 @@ class ObdEngine {
         return {
           groupNum: '115',
           title: 'Group 115: Charge Pressure Control (Boost)',
-          greekTitle: 'Ομάδα 115: Στροφές (010C), Φορτίο (0104) & Πίεση Εισαγωγής (010B / KWP 2173)',
-          description: 'Note: On Audi 1.8T BFB (ISO 9141-2), PID 010B is not supported via standard OBD-II Mode 01 (supported mask 4100BE3FA811). Boost Actual/Specified requires KWP2000 2173.',
+          greekTitle: 'Ομάδα 115: Στροφές (010C), Φορτίο (0104), Boost Specified (KWP 2173) & Boost Actual (010B / KWP 2173)',
+          description: 'Real Boost Specified & Actual from KWP2000 2173 (when ECU accepts KWP session 10 89) or PID 010B.',
           rawHexResponse: rawNote,
           sourceMode: 'OBD-II Mode 01 / KWP 2173',
           fields: [
             { label: 'Engine Speed (010C)', value: fmtRpm, unit: 'RPM', normalRange: '760 - 6800', sourcePid: '010C' },
             { label: 'Engine Load (0104)', value: fmtLoad, unit: '%', normalRange: '15 - 100%', sourcePid: '0104' },
-            { label: 'Boost Specified (KWP)', value: 'N/A', unit: 'mbar', normalRange: 'Απαιτεί KWP 2173', sourcePid: '2173' },
-            { label: 'Boost Actual (010B)', value: fmtMapMbar, unit: 'mbar', normalRange: 'PID 010B / KWP 2173', sourcePid: '010B' },
+            { label: 'Boost Specified (KWP 2173)', value: fmtBoostSpecMbar, unit: 'mbar', normalRange: 'KWP 2173 Cell 3', sourcePid: '2173' },
+            { label: 'Boost Actual (010B / 2173)', value: fmtMapMbar, unit: 'mbar', normalRange: 'PID 010B / KWP 2173', sourcePid: '010B/2173' },
           ]
         };
 

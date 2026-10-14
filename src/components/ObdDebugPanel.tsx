@@ -22,6 +22,7 @@ export const ObdDebugPanel: React.FC = () => {
   const [customCmd, setCustomCmd] = useState('');
   const [isRunningSweep, setIsRunningSweep] = useState(false);
   const [isForcingProto, setIsForcingProto] = useState<string | null>(null);
+  const [isProbingG266, setIsProbingG266] = useState(false);
   const [copiedReport, setCopiedReport] = useState(false);
   const [testingPid, setTestingPid] = useState<string | null>(null);
 
@@ -60,6 +61,15 @@ export const ObdDebugPanel: React.FC = () => {
     }
   };
 
+  const handleProbeG266 = async () => {
+    setIsProbingG266(true);
+    try {
+      await obdEngine.probe17InstrumentsOilTempG266();
+    } finally {
+      setIsProbingG266(false);
+    }
+  };
+
   const handleForceProtocol = async (protoCmd: string) => {
     setIsForcingProto(protoCmd);
     try {
@@ -92,7 +102,11 @@ K-Line Timing: ${debug.kLineTimingConfig} (Dropped Frames: ${debug.kLineDroppedF
 Supported PIDs (0100): ${debug.supportedPids0120}
 Supported PIDs (0120): ${debug.supportedPids2140}
 Supported PIDs (0140): ${debug.supportedPids4160}
-Oil Temp PID 015C: ${debug.oilTempPid015CSupported}
+Lambda / O2 PIDs (0114/0124/0134/0144): ${debug.lambdaPidsStatus}
+VAG KWP2000 Session (10 89): ${debug.kwpSessionStatus}
+Boost Group 115/118 (010B / 2173): ${debug.boostGroup115Status}
+Oil Temp PID 015C (01-Engine): ${debug.oilTempPid015CSupported}
+Oil Temp G266 (17-Instruments): ${debug.instruments17G266Status}
 Active Supported Sensors: ${debug.supportedSensorsCount}
 Full Cycle Time: ${debug.loopCycleMs}ms | Avg Command: ${debug.avgCommandMs}ms (${debug.commandsPerSecHz} cmds/sec)
 Stats: Sent=${debug.totalCommandsSent}, Valid=${debug.totalValidResponses}, Errors=${debug.totalErrors}
@@ -128,7 +142,7 @@ ${recentLogs}
                   Κονσόλα Debug OBD-II &amp; Πραγματικών Μετρήσεων (ME7.5)
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Πραγματικές απαντήσεις Hex χωρίς υπολογισμένες/ψεύτικες τιμές, έλεγχος K-Line ATAT2/ATST 19, PID 015C και μέτρηση πλήρους κύκλου.
+                  Πραγματικές απαντήσεις Hex, έλεγχος συνεδρίας VAG KWP2000 (10 89 / 2173), Lambda PIDs (0114/0124/0134/0144) &amp; G266 (17-Instruments).
                 </p>
               </div>
             </div>
@@ -137,11 +151,20 @@ ${recentLogs}
           <div className="flex items-center flex-wrap gap-2">
             <button
               onClick={handleRunSweep}
-              disabled={isRunningSweep}
+              disabled={isRunningSweep || isProbingG266}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-md shadow-blue-600/20"
             >
               <RefreshCw className={`w-4 h-4 ${isRunningSweep ? 'animate-spin' : ''}`} />
               <span>{isRunningSweep ? 'Έλεγχος σε εξέλιξη...' : 'Επανέλεγχος Υποστήριξης PIDs'}</span>
+            </button>
+
+            <button
+              onClick={handleProbeG266}
+              disabled={isProbingG266 || isRunningSweep}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-md"
+            >
+              <RefreshCw className={`w-4 h-4 ${isProbingG266 ? 'animate-spin' : ''}`} />
+              <span>{isProbingG266 ? 'Έλεγχος 17-Instruments...' : 'Έλεγχος G266 (17-Instruments)'}</span>
             </button>
 
             <button
@@ -183,13 +206,13 @@ ${recentLogs}
           <div className="bg-slate-950/80 border border-slate-800/90 rounded-xl p-3 space-y-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              Bitmasks &amp; Θερμ. Λαδιού (015C)
+              Bitmasks &amp; Lambda PIDs
             </span>
-            <div className="text-[10px] font-mono text-slate-300 truncate">
+            <div className="text-[10px] font-mono text-slate-300 truncate" title={debug.supportedPids0120}>
               0100: {debug.supportedPids0120}
             </div>
-            <div className="text-[10px] font-mono text-amber-300 truncate">
-              PID 015C (Oil Temp): {debug.oilTempPid015CSupported}
+            <div className="text-[10px] font-mono text-amber-300 truncate" title={debug.lambdaPidsStatus}>
+              Lambda/O2: {debug.lambdaPidsStatus}
             </div>
           </div>
 
@@ -206,6 +229,29 @@ ${recentLogs}
               <Clock className="w-3 h-3 text-slate-500" />
               <span>Μ.Ο. Εντολής: {debug.avgCommandMs} ms ({debug.commandsPerSecHz} cmd/s)</span>
             </div>
+          </div>
+        </div>
+
+        {/* Detailed Hardware Verification Status for KWP2000, Boost 115/118, and Oil Temp (015C & 17-Instruments G266) */}
+        <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2.5 text-[11px] font-mono">
+          <div className="bg-slate-950/90 border border-slate-800 rounded-lg p-2.5">
+            <span className="text-slate-400 block font-sans font-bold uppercase text-[10px]">
+              1. Συνεδρία VAG KWP2000 (Service 10 89):
+            </span>
+            <span className="text-cyan-300">{debug.kwpSessionStatus}</span>
+          </div>
+          <div className="bg-slate-950/90 border border-slate-800 rounded-lg p-2.5">
+            <span className="text-slate-400 block font-sans font-bold uppercase text-[10px]">
+              2. Boost Specified / Actual (Group 115 / 010B):
+            </span>
+            <span className="text-amber-300">{debug.boostGroup115Status}</span>
+          </div>
+          <div className="bg-slate-950/90 border border-slate-800 rounded-lg p-2.5">
+            <span className="text-slate-400 block font-sans font-bold uppercase text-[10px]">
+              3. Θερμ. Λαδιού (015C &amp; 17-Instruments G266):
+            </span>
+            <span className="text-emerald-300 block">01-Engine 015C: {debug.oilTempPid015CSupported}</span>
+            <span className="text-slate-300 block mt-0.5">17-Instruments G266: {debug.instruments17G266Status}</span>
           </div>
         </div>
 

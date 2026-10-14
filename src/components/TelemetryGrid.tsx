@@ -20,7 +20,9 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
     oilPressure,
     shortTermFuelTrim,
     longTermFuelTrim,
+    o2SensorVoltage,
     o2SensorAfterVoltage,
+    lambdaSpecified,
     batteryVoltage,
     throttlePosition,
   } = telemetry;
@@ -63,29 +65,36 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
         </div>
       </div>
 
-      {/* 2. AFR & Wideband Lambda (0124) */}
+      {/* 2. AFR, Wideband Lambda (0124/0134), Lambda Spec (0144) & O2 Voltage (0114/0115) */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm">
         <div className="flex items-center justify-between text-slate-400">
           <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
             <Flame className="w-3.5 h-3.5 text-amber-400" />
-            Lambda (PID 0124)
+            Lambda &amp; O2
           </span>
           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold">
             {lambda !== null ? `λ ${lambda.toFixed(3)}` : 'λ N/A'}
           </span>
         </div>
         <div className="my-2">
-          <div className="flex items-baseline gap-1.5">
-            <span className="text-2xl font-black font-mono tracking-tight text-white">
-              {afr !== null ? afr.toFixed(1) : 'N/A'}
+          <div className="flex items-baseline justify-between gap-1.5">
+            <div className="flex items-baseline gap-1">
+              <span className="text-2xl font-black font-mono tracking-tight text-white">
+                {afr !== null ? afr.toFixed(1) : 'N/A'}
+              </span>
+              {afr !== null && <span className="text-xs text-slate-400 font-bold">: 1</span>}
+            </div>
+            <span className="text-[10px] font-mono text-slate-400">
+              Spec: <strong className="text-slate-200">{lambdaSpecified !== null ? lambdaSpecified.toFixed(3) : 'N/A'}</strong>
             </span>
-            {afr !== null && <span className="text-xs text-slate-400 font-bold">: 1 AFR</span>}
           </div>
-          <p className="text-[11px] text-slate-400 mt-0.5 font-mono">
-            O2 B1S2 (0115):{' '}
-            <strong className="text-slate-200">
-              {o2SensorAfterVoltage !== null ? `${o2SensorAfterVoltage.toFixed(3)} V` : 'N/A'}
-            </strong>
+          <p className="text-[10px] text-slate-400 mt-0.5 font-mono flex items-center justify-between">
+            <span>
+              B1S1: <strong className="text-slate-200">{o2SensorVoltage !== null ? `${o2SensorVoltage.toFixed(3)}V` : 'N/A'}</strong>
+            </span>
+            <span>
+              B1S2: <strong className="text-slate-200">{o2SensorAfterVoltage !== null ? `${o2SensorAfterVoltage.toFixed(3)}V` : 'N/A'}</strong>
+            </span>
           </p>
         </div>
         <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden flex">
