@@ -282,7 +282,7 @@ public class MainActivity extends AppCompatActivity {
                 executeRaw("ATS1"); // Spaces on for reliable framing
                 executeRaw("ATH0"); // Headers off
                 executeRaw("ATAT1"); // Safe adaptive timing for K-Line init
-                executeRaw("ATST 64"); // 400ms timeout during 5-baud K-Line init
+                executeRaw("ATST 25"); // 148ms timeout during K-Line init
                 executeRaw("ATSP0"); // Auto protocol search
                 executeRaw("0100"); // ECU wake up & protocol lock (waits full K-Line init)
                 // Switch to ATAT2 + ATST 19 (100ms), verified by obdService.ts

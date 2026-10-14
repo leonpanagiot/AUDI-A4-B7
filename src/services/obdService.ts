@@ -67,7 +67,8 @@ declare global {
   interface Window {
     AndroidOBD?: {
       isNativeApp: () => boolean;
-      getPairedBluetoothDevices: () => string;
+      getPairedDevicesJson?: () => string;
+      getPairedBluetoothDevices?: () => string;
       connectBluetooth: (macAddress: string) => boolean;
       connectWifi: (ip: string, port: number) => boolean;
       sendRawCommand: (cmd: string) => string;
@@ -396,8 +397,11 @@ class ObdEngine {
   public getPairedDevices(): PairedBtDevice[] {
     if (this.isNativeAndroid() && window.AndroidOBD) {
       try {
-        const json = window.AndroidOBD.getPairedBluetoothDevices();
-        return JSON.parse(json) || [];
+        const fn = window.AndroidOBD.getPairedDevicesJson || window.AndroidOBD.getPairedBluetoothDevices;
+        if (typeof fn === 'function') {
+          const json = fn.call(window.AndroidOBD);
+          return JSON.parse(json) || [];
+        }
       } catch (e) {
         return [];
       }
@@ -811,15 +815,17 @@ class ObdEngine {
       this.unsupportedPids.clear();
       this.debugState.kLineDroppedFrames = 0;
       this.debugState.kLineTimingVerified = false;
-      await this.sleep(200);
+
+      // Allow any in-flight native initElm327() K-Line 5-baud handshake to finish cleanly
+      await this.sleep(350);
 
       await this.sendObdCommand('ATE0'); // Echo Off
       await this.sendObdCommand('ATL0'); // Linefeeds Off
       await this.sendObdCommand('ATS1'); // Spaces On (reliable framing across all K-Line clones)
       await this.sendObdCommand('ATH0'); // Headers Off
-      await this.sendObdCommand('ATAT1'); // Safe Adaptive Timing during K-Line 5-baud handshake
-      await this.sendObdCommand('ATST 64'); // 400ms timeout during 5-baud handshake
-      this.debugState.kLineTimingConfig = 'ATAT1 + ATST 64 (Handshake)';
+      await this.sendObdCommand('ATAT1'); // Safe Adaptive Timing during K-Line handshake
+      await this.sendObdCommand('ATST 25'); // 148ms timeout (fits well inside Android 450-650ms socket read window)
+      this.debugState.kLineTimingConfig = 'ATAT1 + ATST 25 (Handshake)';
 
       // 1. Read ELM327 Chip Version
       const atiResp = await this.sendObdCommand('ATI');
@@ -837,37 +843,59 @@ class ObdEngine {
         return null;
       });
       this.pushLiveTelemetryUpdate();
+      this.notifyDebug();
 
-      // 3. Protocol Selection & ECU Handshake
-      const protocolsToTry = forcedProtocolCmd
-        ? [forcedProtocolCmd]
-        : ['ATSP0', 'ATSP3', 'ATSP5', 'ATSP4', 'ATSP6'];
+      // Helper to test 0100 lock without aborting K-Line 5-baud BUS INIT
+      const tryLockWith0100 = async (): Promise<string | null> => {
+        let initResp = await this.sendObdCommand('0100');
+        if (initResp.includes('41') && !initResp.toUpperCase().includes('UNABLE')) {
+          return initResp;
+        }
+        const upper = initResp.toUpperCase();
+        if ((upper.includes('SEARCHING') || upper.includes('BUS INIT')) && !upper.includes('UNABLE')) {
+          // Wait quietly so the 5-baud K-Line init completes without UART interruption
+          await this.sleep(1800);
+          initResp = await this.sendObdCommand('0100');
+          if (initResp.includes('41') && !initResp.toUpperCase().includes('UNABLE')) {
+            return initResp;
+          }
+        }
+        return null;
+      };
 
       let locked = false;
 
-      for (const protoCmd of protocolsToTry) {
-        await this.sendObdCommand(protoCmd);
-        await this.sleep(50);
-
-        this.notifyStatus(`Κλείδωμα εγκεφάλου ECU (${protoCmd})...`, this.mode);
-        let initResp = await this.sendObdCommand('0100');
-
-        if ((initResp.toUpperCase().includes('SEARCHING') || initResp.toUpperCase().includes('BUS INIT')) && !initResp.includes('41')) {
-          await this.sleep(1600);
-          initResp = await this.sendObdCommand('0100');
-        }
-
-        if (initResp.includes('41') && !initResp.toUpperCase().includes('UNABLE')) {
+      // 3A. First check if ECU is ALREADY locked from native initElm327() before resetting protocol with ATSPx
+      if (!forcedProtocolCmd) {
+        this.notifyStatus('Έλεγχος ενεργής σύνδεσης ECU (0100)...', this.mode);
+        const initialCheck = await tryLockWith0100();
+        if (initialCheck) {
           locked = true;
-          this.debugState.supportedPids0120 = initResp;
-          this.applyPidSupportBitmask(initResp, 1);
-          break;
+          this.debugState.supportedPids0120 = initialCheck;
+          this.applyPidSupportBitmask(initialCheck, 1);
         }
+      }
 
-        const rpmCheck = await this.sendObdCommand('010C');
-        if (this.parseRpm(rpmCheck) !== null) {
-          locked = true;
-          break;
+      // 3B. If not yet locked, try VAG K-Line protocols in optimal order for Audi BFB ME7.5
+      if (!locked) {
+        const protocolsToTry = forcedProtocolCmd
+          ? [forcedProtocolCmd]
+          : ['ATSP4', 'ATSP5', 'ATSP3', 'ATSP0', 'ATSP6'];
+
+        for (const protoCmd of protocolsToTry) {
+          if (this.mode === 'disconnected') return false;
+
+          this.notifyStatus(`Κλείδωμα εγκεφάλου ECU (${protoCmd})...`, this.mode);
+          await this.sleep(30);
+          await this.sendObdCommand(protoCmd);
+
+          const lockResp = await tryLockWith0100();
+          if (lockResp) {
+            locked = true;
+            this.debugState.supportedPids0120 = lockResp;
+            this.applyPidSupportBitmask(lockResp, 1);
+            break;
+          }
         }
       }
 
@@ -878,9 +906,12 @@ class ObdEngine {
       const dpnResp = await this.sendObdCommand('ATDPN');
       this.debugState.protocolName = dpResp || 'Unknown';
       this.debugState.protocolNum = dpnResp || '-';
+      this.notifyDebug();
 
       if (locked) {
-        // 5. Discover Supported PIDs in 0120 (21-40) and 0140 (41-60) BEFORE switching timing
+        this.notifyStatus(`ECU Κλειδώθηκε (${this.debugState.protocolName})! Ανάγνωση υποστηριζόμενων αισθητήρων...`, this.mode);
+
+        // 5. Discover Supported PIDs in 0120 (21-40) and 0140 (41-60)
         const p20 = await this.sendObdCommand('0120');
         if (p20.includes('41')) {
           this.debugState.supportedPids2140 = p20;
@@ -960,17 +991,27 @@ class ObdEngine {
     const r1 = await this.sendObdCommand('010C');
     const r2 = await this.sendObdCommand('0105');
 
-    const ok1 = this.parseRpm(r1) !== null;
-    const ok2 = this.parseCoolant(r2) !== null;
+    const rpmVal = this.parseRpm(r1);
+    const coolVal = this.parseCoolant(r2);
 
-    if (ok1 && ok2) {
+    if (rpmVal !== null) {
+      this.liveTelemetry.rpm = rpmVal;
+    }
+    if (coolVal !== null) {
+      this.liveTelemetry.coolantTemp = coolVal;
+    }
+    if (rpmVal !== null || coolVal !== null) {
+      this.pushLiveTelemetryUpdate();
+    }
+
+    if (rpmVal !== null && coolVal !== null) {
       this.debugState.kLineTimingConfig = 'ATAT2 + ATST 19 (100ms - Verified 0% Loss)';
       this.debugState.kLineTimingVerified = true;
     } else {
-      // Fallback to safer K-Line turnaround timing so no frames are lost
+      // Fallback to safer K-Line turnaround timing (148ms, safe inside 450ms Android socket timeout)
       await this.sendObdCommand('ATAT1');
-      await this.sendObdCommand('ATST 32'); // 50 * 4ms = 200ms
-      this.debugState.kLineTimingConfig = 'ATAT1 + ATST 32 (200ms - Safe K-Line Fallback)';
+      await this.sendObdCommand('ATST 25'); // 37 * 4ms = 148ms
+      this.debugState.kLineTimingConfig = 'ATAT1 + ATST 25 (148ms - Safe K-Line Fallback)';
       this.debugState.kLineTimingVerified = false;
     }
   }
@@ -1023,7 +1064,8 @@ class ObdEngine {
   }
 
   /**
-   * Serialized raw command sender with mutex lock so two commands NEVER overlap on the socket
+   * Serialized raw command sender with mutex lock so two commands NEVER overlap on the socket.
+   * Includes a 4ms macrotask yield before synchronous AndroidOBD JNI calls so React renders immediately and never freezes the UI thread.
    */
   public async sendObdCommand(cmd: string): Promise<string> {
     const run = async (): Promise<string> => {
@@ -1032,10 +1074,9 @@ class ObdEngine {
 
       // 1. Android Native Bridge (Bluetooth Classic RFCOMM SPP & TCP Socket)
       if (this.isNativeAndroid() && window.AndroidOBD) {
+        // CRITICAL: Yield to browser macrotask queue before synchronous JNI call so UI updates render immediately
+        await new Promise<void>(resolve => setTimeout(resolve, 4));
         const res = window.AndroidOBD.sendRawCommand(cleanCmd) || '';
-        if ((res.toUpperCase().includes('SEARCHING') || res.toUpperCase().includes('BUS INIT')) && !res.includes('41')) {
-          await this.sleep(1400);
-        }
         return res;
       }
 
