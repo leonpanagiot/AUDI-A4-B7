@@ -3,9 +3,12 @@
         <item name="colorPrimary">@color/audi_red</item>
         <item name="android:statusBarColor">@color/cockpit_bg</item>
         <item name="android:navigationBarColor">@color/cockpit_bg</item>
+        <item name="android:windowBackground">@color/cockpit_bg</item>
+        <item name="android:colorBackground">@color/cockpit_bg</item>
     </style>
     <style name="Theme.AudiBFBLive.Fullscreen" parent="Theme.AudiBFBLive">
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowBackground">@color/cockpit_bg</item>
     </style>
 </resources>
