@@ -332,7 +332,7 @@ public class MainActivity extends AppCompatActivity {
                 
                 // Calibrated timeouts for K-Line handshake (0100 / ATSPA4 / 010C)
                 // Single PIDs during live polling respond in 50-150ms and break immediately on '>'
-                long maxWait = (cleanCmd.startsWith("0100") || cleanCmd.startsWith("010C") || cleanCmd.startsWith("0105") || cleanCmd.startsWith("ATSP") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 6500 : 750;
+                long maxWait = (cleanCmd.startsWith("0100") || cleanCmd.startsWith("ATSP") || cleanCmd.equals("ATZ") || cleanCmd.equals("03") || cleanCmd.equals("07")) ? 6500 : 750;
                 byte[] buffer = new byte[256];
 
                 while (System.currentTimeMillis() - startTime < maxWait) {
@@ -342,6 +342,11 @@ public class MainActivity extends AppCompatActivity {
                             String chunk = new String(buffer, 0, read, StandardCharsets.US_ASCII);
                             sb.append(chunk);
                             String current = sb.toString().toUpperCase();
+
+                            // ELM327 prompt completes a command even when NO DATA is returned.
+                            if (sb.indexOf(">") != -1) {
+                                break;
+                            }
                             
                             // Break immediately on explicit bus error or disconnection responses
                             if (current.contains("BUS INIT: ERROR") || current.contains("UNABLE TO CONNECT") || current.contains("CAN ERROR") || current.contains("STOPPED")) {
