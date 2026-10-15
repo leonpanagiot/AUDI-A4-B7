@@ -61,7 +61,16 @@ jobs:
         run: npx cap sync ios
       - name: Compile iOS simulator (unsigned)
         run: |
-          xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+          echo "Available iOS Xcode containers:"
+          find ios -maxdepth 4 \( -name '*.xcworkspace' -o -name '*.xcodeproj' \) -print
+          if [ -d ios/App/App.xcworkspace ]; then
+            xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+          elif [ -d ios/App/App.xcodeproj ]; then
+            xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+          else
+            echo "::error::No Xcode project found after Capacitor generation"
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: audi-live-ios-project
