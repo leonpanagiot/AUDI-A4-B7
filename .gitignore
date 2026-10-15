@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Machine-specific Android SDK configuration
+android/local.properties
