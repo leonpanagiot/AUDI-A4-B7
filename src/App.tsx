@@ -304,10 +304,10 @@ export default function App() {
                 ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
-            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'Χρονόμετρο 0-100'}
+            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'Draggy'}
           >
             {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Timer className="w-3.5 h-3.5" />}
-            <span>0-100 km/h</span>
+            <span>Draggy</span>
           </button>
 
           {/* Debug Console tab (Always accessible before and after connection) */}
