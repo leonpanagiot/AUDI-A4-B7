@@ -384,7 +384,7 @@ export default function App() {
                 <div className="flex items-center gap-2 mb-2">
                   <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
                   <h3 className="text-xs font-bold text-slate-300 uppercase tracking-widest font-mono">
-                    ΜΠΑΡΟΜΕΤΡΟ (TURBO BOOST)
+                    CALCULATED BOOST (ΕΚΤΙΜΗΣΗ)
                   </h3>
                 </div>
                 <AnalogBoostGauge
