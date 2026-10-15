@@ -1891,6 +1891,79 @@ class ObdEngine {
    * Temporarily disabled per Requirement 2 to prevent destroying the 01-Engine ECU session.
    * Does NOT attempt any automatic change to another ECU.
    */
+  /**
+   * Explicit, isolated VAG engine address 01 capability test.
+   * Never run on the live polling connection without stopping and restoring it.
+   * A positive KWP session alone is not proof of Group 115/118 support.
+   */
+  public async testVagEngineGroups115118(): Promise<string> {
+    if (this.mode !== 'wifi' && this.mode !== 'bluetooth') {
+      return 'Δεν υπάρχει σύνδεση με ELM327.';
+    }
+    const wasPolling = this.isPolling;
+    const originalProtocol = this.activeProtocolCmd || 'ATSPA4';
+    this.stopRealObdPolling();
+    // Allow the in-flight command and the polling loop to finish.
+    for (let i = 0; i < 100 && this.isPollingRunning; i++) {
+      await this.sleep(100);
+    }
+    if (this.isPollingRunning) {
+      const msg = 'Το polling δεν σταμάτησε εγκαίρως. Ο έλεγχος VAG ακυρώθηκε.';
+      this.recordCommandLog('VAG TEST', msg, msg, 0, true);
+      this.notifyDebug();
+      return msg;
+    }
+    let result = 'Δεν επιβεβαιώθηκε πρόσβαση στα VAG Groups 115/118.';
+    const probe = async (cmd: string): Promise<string> => {
+      const started = performance.now();
+      const raw = await this.sendObdCommand(cmd);
+      this.recordCommandLog('VAG TEST ' + cmd, raw || 'EMPTY', 'Isolated VAG 01-Engine test', Math.round(performance.now() - started), this.isNoData(raw));
+      this.notifyDebug();
+      return raw;
+    };
+    try {
+      this.notifyStatus('Έλεγχος VAG 01-Engine / Groups 115 & 118...', this.mode);
+      await probe('ATSH 81 01 F1');
+      await probe('ATIIA 01');
+      const protocolReply = await probe('ATSP5');
+      if (/ERROR|\?/.test(protocolReply.toUpperCase())) {
+        result = 'Το ELM327 δεν δέχτηκε τη ρύθμιση KWP Fast (ATSP5).';
+      } else {
+        const rpmReply = await probe('010C');
+        if (!/41\s*0C/i.test(rpmReply)) {
+          result = 'Δεν επιβεβαιώθηκε επικοινωνία με 01-Engine στο ATSP5. Ελέγξτε το log.';
+        } else {
+          const sessionReply = await probe('1089');
+          if (!this.isKwp1089PositiveResponse(sessionReply)) {
+            result = 'Η ECU απέρριψε το 10 89 στο ATSP5: ' + sessionReply.trim();
+          } else {
+            const g115 = await probe('2173');
+            const g118 = await probe('2176');
+            const ok115 = /61\s*73/i.test(g115);
+            const ok118 = /61\s*76/i.test(g118);
+            result = 'Group 115: ' + (ok115 ? 'θετική απάντηση' : 'μη διαθέσιμο') +
+              ' (' + g115.trim() + '), Group 118: ' +
+              (ok118 ? 'θετική απάντηση' : 'μη διαθέσιμο') + ' (' + g118.trim() + ')';
+            // Do not change the live boost source until its decoding is verified.
+          }
+        }
+      }
+    } catch (error: any) {
+      result = 'Σφάλμα ελέγχου VAG: ' + (error?.message || String(error));
+    } finally {
+      try {
+        await this.initializeAndLockEcu(originalProtocol);
+        if (wasPolling && this.debugState.ecuLocked) this.startRealObdPolling();
+      } catch (error: any) {
+        result += ' | Αποτυχία επαναφοράς ECU: ' + (error?.message || String(error));
+        this.debugState.ecuLocked = false;
+      }
+      this.recordCommandLog('VAG TEST RESULT', result, result, 0, false);
+      this.notifyDebug();
+    }
+    return result;
+  }
+
   public async probe17InstrumentsOilTempG266(): Promise<string> {
     const msg = 'Ο έλεγχος 17-Instruments (G266) είναι προσωρινά απενεργοποιημένος για την προστασία της συνεδρίας της Engine ECU (01-Engine ME7.5).';
     this.debugState.instruments17G266Status = msg;
