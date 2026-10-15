@@ -777,6 +777,8 @@ class ObdEngine {
         parsedValue: 'N/A',
         latencyMs: 0,
         bridgeLatencyMs: 0,
+        timeoutMs: (item.pid === '010C' || item.pid.startsWith('AT')) ? 6500 : 750,
+        retries: 0,
         refreshIntervalMs: 0,
         lastValidTimestampMs: 0,
         status: 'pending',
