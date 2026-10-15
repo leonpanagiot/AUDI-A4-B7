@@ -2856,7 +2856,7 @@ class ObdEngine {
     const allPidsOrder = INITIAL_PID_CATALOG.map(i => i.pid);
     // Fast dashboard channels are refreshed every pass; slow-changing channels
     // are refreshed once every 4 passes. The ECU still receives one request at a time.
-    const fastPids = new Set(['010C', '0104', '010B', '010D', '010F', '0110', '0111', '0134']);
+    const fastPids = new Set(['0110', '0105', '010C', '010E']);
     let passNumber = 0;
 
     while (this.isPolling && (this.mode === 'bluetooth' || this.mode === 'wifi')) {
