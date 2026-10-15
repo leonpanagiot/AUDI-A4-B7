@@ -83,6 +83,37 @@ export const VagMeasuringBlocks: React.FC<Props> = ({ telemetry }) => {
 
   return (
     <div className="space-y-4">
+      {/* Separate standard OBD-II information, not VAG measuring groups. */}
+      <section className="bg-slate-900/90 border border-cyan-800/60 rounded-xl p-4 space-y-3">
+        <h3 className="text-white font-bold text-base">Πληροφορίες ECU / OBD-II — Επιβεβαιωμένα PID</h3>
+        <p className="text-xs text-slate-400">Οι τιμές κατάστασης παρακάτω προέρχονται από την τελευταία φωτογραφία σάρωσης (όχι ζωντανή επανάληψη). Οι τιμές Lambda/O2 ανανεώνονται από την τηλεμετρία όταν είναι διαθέσιμες.</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {[
+            ['0101', 'Check Engine / DTC / Readiness', 'MIL OFF · 7 δηλωμένοι DTC · Readiness 07 6D 29'],
+            ['0103', 'Σύστημα καυσίμου', 'Open loop λόγω φορτίου · Σύστημα 2 μη διαθέσιμο'],
+            ['0112', 'Δευτερεύων αέρας', 'Εξωτερική ατμόσφαιρα'],
+            ['0113', 'Παρουσία αισθητήρων οξυγόνου', 'Bank 1 Sensor 1 και Sensor 2'],
+            ['011C', 'Πρότυπο OBD', 'EOBD (Ευρωπαϊκό)'],
+            ['0121', 'Απόσταση με αναμμένη MIL', '0 km'],
+          ].map(([pid, label, value]) => <div key={pid} className="bg-slate-950/70 rounded-lg border border-slate-800 p-3">
+            <span className="text-xs text-cyan-400 font-mono">{pid}</span>
+            <div className="text-xs text-slate-400 mt-1">{label}</div>
+            <div className="text-sm font-semibold text-white mt-1">{value}</div>
+          </div>)}
+        </div>
+        <h4 className="text-sm font-bold text-white">Ζωντανές μετρήσεις αισθητήρων οξυγόνου</h4>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="bg-slate-950/70 rounded-lg p-3 border border-slate-800">
+            <div className="text-xs text-slate-400">0134 · B1S1 · Lambda πριν τον καταλύτη</div>
+            <div className="text-xl font-bold text-white">{telemetry.lambda === null ? 'N/A' : telemetry.lambda.toFixed(3) + ' λ'}</div>
+          </div>
+          <div className="bg-slate-950/70 rounded-lg p-3 border border-slate-800">
+            <div className="text-xs text-slate-400">0115 · B1S2 · O2 μετά τον καταλύτη</div>
+            <div className="text-xl font-bold text-white">{telemetry.o2SensorAfterVoltage === null ? 'N/A' : telemetry.o2SensorAfterVoltage.toFixed(3) + ' V'}</div>
+          </div>
+        </div>
+        <p className="text-xs text-slate-400">Το 0113 δείχνει ποιοι αισθητήρες υπάρχουν, όχι τι μετρούν. Το 0134 δείχνει το πραγματικό λ του μείγματος και το 0115 την τάση του αισθητήρα μετά τον καταλύτη.</p>
+      </section>
       {/* Header & Manual Group Search Bar */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-4 shadow-lg">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
