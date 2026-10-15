@@ -21,6 +21,8 @@ export const ObdDebugPanel: React.FC = () => {
   const [debug, setDebug] = useState<ObdDebugState>(obdEngine.getDebugState());
   const [customCmd, setCustomCmd] = useState('');
   const [isRunningSweep, setIsRunningSweep] = useState(false);
+  const [isScanningAll, setIsScanningAll] = useState(false);
+  const [scanResult, setScanResult] = useState('');
   const [isForcingProto, setIsForcingProto] = useState<string | null>(null);
   const [isProbingG266, setIsProbingG266] = useState(false);
   const [isTestingVag, setIsTestingVag] = useState(false);
@@ -60,6 +62,16 @@ export const ObdDebugPanel: React.FC = () => {
       await obdEngine.runFullSensorDiagnosticSweep();
     } finally {
       setIsRunningSweep(false);
+    }
+  };
+
+  const handleScanAll = async () => {
+    setIsScanningAll(true);
+    setScanResult('');
+    try {
+      setScanResult(await obdEngine.scanAllSensors());
+    } finally {
+      setIsScanningAll(false);
     }
   };
 
@@ -161,6 +173,12 @@ ${recentLogs}
           </div>
 
           <div className="flex items-center flex-wrap gap-2">
+            <button onClick={handleScanAll}
+              disabled={isScanningAll || isRunningSweep || isTestingVag}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 text-white text-xs font-bold uppercase">
+              <RefreshCw className={`w-4 h-4 ${isScanningAll ? 'animate-spin' : ''}`} />
+              {isScanningAll ? 'Scanning...' : 'Scan All Sensors'}
+            </button>
             <button
               onClick={handleRunSweep}
               disabled={isRunningSweep || isProbingG266}
@@ -197,6 +215,7 @@ ${recentLogs}
           </div>
         </div>
 
+        {scanResult && <div className="mt-3 text-xs text-cyan-300 font-mono break-words">{scanResult}</div>}
         {vagTestResult && (
           <div className="mt-3 rounded-xl border border-violet-500/40 bg-violet-950/30 p-3 text-sm text-violet-100 whitespace-pre-wrap">
             {vagTestResult}
