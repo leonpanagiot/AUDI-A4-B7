@@ -2088,7 +2088,7 @@ class ObdEngine {
         const prefix = '41' + base.toString(16).toUpperCase().padStart(2, '0');
         const pos = normalized.indexOf(prefix);
         if (pos < 0 || normalized.length < pos + 12) break;
-        const mask = normalized.slice(pos + 2, pos + 10);
+        const mask = normalized.slice(pos + 4, pos + 12);
         if (!/^[0-9A-F]{8}$/.test(mask)) break;
         for (let offset = 1; offset <= 32; offset++) {
           const byte = parseInt(mask.slice(Math.floor((offset - 1) / 8) * 2, Math.floor((offset - 1) / 8) * 2 + 2), 16);
