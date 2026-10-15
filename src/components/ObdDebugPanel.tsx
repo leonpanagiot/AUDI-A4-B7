@@ -23,6 +23,8 @@ export const ObdDebugPanel: React.FC = () => {
   const [isRunningSweep, setIsRunningSweep] = useState(false);
   const [isForcingProto, setIsForcingProto] = useState<string | null>(null);
   const [isProbingG266, setIsProbingG266] = useState(false);
+  const [isTestingVag, setIsTestingVag] = useState(false);
+  const [vagTestResult, setVagTestResult] = useState('');
   const [copiedReport, setCopiedReport] = useState(false);
   const [testingPid, setTestingPid] = useState<string | null>(null);
 
@@ -67,6 +69,16 @@ export const ObdDebugPanel: React.FC = () => {
       await obdEngine.probe17InstrumentsOilTempG266();
     } finally {
       setIsProbingG266(false);
+    }
+  };
+
+  const handleVagTest = async () => {
+    setIsTestingVag(true);
+    setVagTestResult('');
+    try {
+      setVagTestResult(await obdEngine.testVagEngineGroups115118());
+    } finally {
+      setIsTestingVag(false);
     }
   };
 
@@ -168,6 +180,14 @@ ${recentLogs}
             </button>
 
             <button
+              onClick={handleVagTest}
+              disabled={isTestingVag || isProbingG266 || isRunningSweep}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-violet-700 hover:bg-violet-600 disabled:opacity-50 text-white text-xs font-bold uppercase"
+            >
+              <Radio className={`w-4 h-4 ${isTestingVag ? 'animate-pulse' : ''}`} />
+              <span>{isTestingVag ? 'Έλεγχος VAG σε εξέλιξη...' : 'VAG Group Connection Test (115/118)'}</span>
+            </button>
+            <button
               onClick={handleCopyDebugReport}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-md"
             >
@@ -176,6 +196,12 @@ ${recentLogs}
             </button>
           </div>
         </div>
+
+        {vagTestResult && (
+          <div className="mt-3 rounded-xl border border-violet-500/40 bg-violet-950/30 p-3 text-sm text-violet-100 whitespace-pre-wrap">
+            {vagTestResult}
+          </div>
+        )}
 
         {/* Connection & ECU Diagnostic Metadata Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-4">
