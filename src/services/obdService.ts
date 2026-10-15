@@ -2685,10 +2685,10 @@ class ObdEngine {
     this.isPollingRunning = true;
 
     const allPidsOrder = INITIAL_PID_CATALOG.map(i => i.pid);
-    // A complete cycle is the time to revisit each eligible PID once.
-    // Rotate the starting PID each cycle so slow responses do not always
-    // penalize the same sensors at the end of the queue.
-    let nextStartIndex = 0;
+    // Fast dashboard channels are refreshed every pass; slow-changing channels
+    // are refreshed once every 4 passes. The ECU still receives one request at a time.
+    const fastPids = new Set(['010C', '0104', '010B', '010D', '010F', '0110', '0111', '0134']);
+    let passNumber = 0;
 
     while (this.isPolling && (this.mode === 'bluetooth' || this.mode === 'wifi')) {
       if (!this.debugState.ecuLocked) {
@@ -2699,12 +2699,12 @@ class ObdEngine {
       const cycleStart = performance.now();
       try {
         const supportedQueue = allPidsOrder.filter(pid => !this.unsupportedPids.has(pid));
-        this.debugState.supportedSensorsCount = supportedQueue.length;
-        const start = supportedQueue.length ? nextStartIndex % supportedQueue.length : 0;
-        const fairQueue = supportedQueue.slice(start).concat(supportedQueue.slice(0, start));
-        nextStartIndex++;
+        const slowPass = (passNumber++ % 4) === 3;
+        const activeQueue = supportedQueue.filter(pid => fastPids.has(pid) || slowPass);
+        // This metric describes the actual pass, not all supported channels.
+        this.debugState.supportedSensorsCount = activeQueue.length;
 
-        for (const pid of fairQueue) {
+        for (const pid of activeQueue) {
           if (!this.isPolling || !this.debugState.ecuLocked || (this.mode !== 'bluetooth' && this.mode !== 'wifi')) break;
           await this.pollSinglePidIfSupported(pid);
         }
