@@ -22,7 +22,7 @@ jobs:
           fi
           mkdir -p certificate-request
           chmod 700 certificate-request
-          openssl genrsa -out certificate-request/distribution-private.key 3072
+          openssl genrsa -out certificate-request/distribution-private.key 2048
           openssl req -new -sha256 -key certificate-request/distribution-private.key \
             -out certificate-request/AUDI-Live-Distribution.certSigningRequest \
             -subj "/CN=AUDI Live Distribution/O=AUDI Live"
