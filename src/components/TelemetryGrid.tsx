@@ -224,14 +224,22 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry, onSensorDoubleClick 
         </div>
       </div>
 
-      {/* 8. Voltage (ATRV) & Throttle (0111) */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm" onDoubleClick={() => onSensorDoubleClick?.('0111')} title="Διπλό πάτημα: γρήγορη καταγραφή αισθητήρα" style={{ touchAction: 'manipulation' }}>
+      {/* Throttle position is an independent dashboard card. */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between shadow-sm" onDoubleClick={() => onSensorDoubleClick?.('0111')} title="Διπλό πάτημα: High-Speed πεταλούδας">
+        <span className="text-xs font-bold text-cyan-400">Πεταλούδα · PID 0111</span>
+        <div className="my-2 text-2xl font-black font-mono text-white">{throttlePosition !== null ? throttlePosition.toFixed(1) + '%' : 'N/A'}</div>
+        <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+          <div className="h-full bg-cyan-500" style={{ width: String(Math.max(0, Math.min(100, throttlePosition ?? 0))) + '%' }} />
+        </div>
+      </div>
+      {/* Adapter voltage only (ATRV) */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm" >
         <div className="flex items-center justify-between text-slate-400">
           <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
             <Battery className="w-3.5 h-3.5 text-amber-300" />
-            Τάση &amp; Πεταλούδα
+            Τάση αντάπτορα
           </span>
-          <span className="text-[10px] font-mono text-slate-400">ATRV / 0111</span>
+          <span className="text-[10px] font-mono text-slate-400">ATRV</span>
         </div>
         <div className="my-2 flex items-center justify-between">
           <div>
@@ -242,20 +250,12 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry, onSensorDoubleClick 
             </div>
             <span className="text-[10px] text-slate-400">Μπαταρία</span>
           </div>
-          <div className="h-8 w-px bg-slate-800" />
-          <div>
-            <div className="flex items-baseline gap-1">
-              <span className="text-xl font-black font-mono text-white">
-                {throttlePosition !== null ? `${throttlePosition}%` : 'N/A'}
-              </span>
-            </div>
-            <span className="text-[10px] text-slate-400">Πεταλούδα (0111)</span>
-          </div>
+
         </div>
         <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
           <div
             className="bg-amber-400 h-full rounded-full transition-all"
-            style={{ width: `${throttlePosition !== null ? throttlePosition : 0}%` }}
+            style={{ width: `${batteryVoltage !== null ? Math.min(100, batteryVoltage / 15 * 100) : 0}%` }}
           />
         </div>
       </div>
