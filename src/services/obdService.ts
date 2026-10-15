@@ -501,6 +501,7 @@ class ObdEngine {
   private isPolling: boolean = false;
   private isPollingRunning: boolean = false;
   private focusedSensorPid: string | null = null;
+  private speedSampleListeners = new Set<(speed: number, at: number) => void>();
   private commandMutex: Promise<any> = Promise.resolve();
   private logCounter: number = 1;
   private recentLatencies: number[] = [];
@@ -2593,6 +2594,7 @@ class ObdEngine {
           const val = this.parseSpeed(raw);
           if (val !== null) {
             this.liveTelemetry.speed = val;
+            this.speedSampleListeners.forEach(callback => callback(val, performance.now()));
             updated = true;
             return `${val} km/h`;
           }
@@ -2835,6 +2837,11 @@ class ObdEngine {
    * - Sequentially queries all supported sensors without priority starvation
    * - Automatically skips unsupported PIDs to maximize loop throughput
    */
+  public subscribeSpeedSamples(callback: (speed: number, at: number) => void): () => void {
+    this.speedSampleListeners.add(callback);
+    return () => { this.speedSampleListeners.delete(callback); };
+  }
+
   public setFocusedSensor(pid: string | null): void {
     // Only standard, already-known Mode 01 sensors; never switch ECU protocol.
     const allowed = new Set(['010C','0104','0105','0106','0107','010D','010E','010F','0110','0111','0115','0134']);
