@@ -1,0 +1,43 @@
+name: Apple Distribution CSR
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-csr:
+    runs-on: macos-15
+    steps:
+      - name: Create certificate signing request and encrypted private key
+        env:
+          CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$CERT_PASSWORD" ]; then
+            echo "::error::Add repository secret IOS_CERT_PASSWORD before running this workflow."
+            exit 1
+          fi
+          mkdir -p certificate-request
+          chmod 700 certificate-request
+          openssl genrsa -out certificate-request/distribution-private.key 3072
+          openssl req -new -sha256 -key certificate-request/distribution-private.key \
+            -out certificate-request/AUDI-Live-Distribution.certSigningRequest \
+            -subj "/CN=AUDI Live Distribution/O=AUDI Live"
+          openssl pkcs8 -topk8 -v2 aes-256-cbc -iter 200000 \
+            -in certificate-request/distribution-private.key \
+            -out certificate-request/distribution-private-encrypted.pem \
+            -passout env:CERT_PASSWORD
+          rm -f certificate-request/distribution-private.key
+          chmod 600 certificate-request/distribution-private-encrypted.pem
+      - name: Upload CSR and encrypted key
+        uses: actions/upload-artifact@v4
+        with:
+          name: audi-live-apple-distribution-csr
+          path: |
+            certificate-request/AUDI-Live-Distribution.certSigningRequest
+            certificate-request/distribution-private-encrypted.pem
+          retention-days: 7
+          if-no-files-found: error
