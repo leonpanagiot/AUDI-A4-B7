@@ -2868,10 +2868,10 @@ class ObdEngine {
       const cycleStart = performance.now();
       try {
         const supportedQueue = allPidsOrder.filter(pid => !this.unsupportedPids.has(pid));
-        const slowPass = (passNumber++ % 4) === 3;
+        const secondarySlot = passNumber++ % 4;
         const activeQueue = this.focusedSensorPid
           ? (this.unsupportedPids.has(this.focusedSensorPid) ? [] : [this.focusedSensorPid])
-          : supportedQueue.filter(pid => fastPids.has(pid) || slowPass);
+          : supportedQueue.filter(pid => fastPids.has(pid) || (allPidsOrder.filter(p => !fastPids.has(p)).indexOf(pid) % 4 === secondarySlot));
         // This metric describes the actual pass, not all supported channels.
         this.debugState.supportedSensorsCount = supportedQueue.length;
 
