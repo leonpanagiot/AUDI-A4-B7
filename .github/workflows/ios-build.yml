@@ -1,0 +1,54 @@
+name: iOS Build Check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/telemetry-polling-20261015]
+    paths:
+      - 'src/**'
+      - 'ios-native/**'
+      - 'capacitor.config.ts'
+      - 'package.json'
+      - '.github/workflows/ios-build.yml'
+
+jobs:
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Check TypeScript
+        run: npm run lint
+      - name: Build web app
+        run: npm run build
+      - name: Generate Capacitor iOS project
+        run: npx cap add ios
+      - name: Copy native iOS bridge
+        run: |
+          cp ios-native/IosObdPlugin.swift ios/App/App/
+          cp ios-native/AudiBridgeViewController.swift ios/App/App/
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('ios/App/App/Base.lproj/Main.storyboard')
+          s=p.read_text()
+          s=s.replace('customClass="CAPBridgeViewController"', 'customClass="AudiBridgeViewController"')
+          p.write_text(s)
+          p=Path('ios/App/App/Info.plist')
+          s=p.read_text().replace('</dict>', '<key>NSLocalNetworkUsageDescription</key><string>Σύνδεση με WiFi OBD2 για δεδομένα ECU.</string></dict>')
+          p.write_text(s)
+          PY
+      - name: Sync iOS
+        run: npx cap sync ios
+      - name: iOS project generation status
+        run: |
+          echo 'iOS project generated. Swift plugin files must be registered with the Xcode target before compiling.'
+          ls ios/App/App/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audi-live-ios-project
+          path: ios/
+          retention-days: 7
