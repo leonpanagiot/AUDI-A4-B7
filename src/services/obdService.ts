@@ -2220,7 +2220,7 @@ class ObdEngine {
     entry.lastUpdated = nowStr;
 
     const upperRaw = (raw || '').toUpperCase();
-    if (upperRaw.includes('BUS INIT: ERROR') || upperRaw.includes('UNABLE TO CONNECT') || upperRaw.includes('CAN ERROR') || upperRaw.includes('STOPPED')) {
+    if (upperRaw.includes('BUS INIT: ERROR') || upperRaw.includes('UNABLE TO CONNECT') || upperRaw.includes('CAN ERROR')) {
       entry.status = 'error';
       entry.parsedValue = 'BUS INIT ERROR';
       entry.failCount++;
@@ -2400,6 +2400,7 @@ class ObdEngine {
           if (val !== null && val >= 10) {
             const baroKpa = this.liveTelemetry.baroPressureKpa;
             if (baroKpa === null || baroKpa === undefined) {
+              updated = true;
               return `${val} kPa MAP (relative boost N/A: PID 0133 unavailable)`;
             }
             const boostBar = Math.round(((val - baroKpa) / 100) * 100) / 100;
@@ -3024,10 +3025,12 @@ class ObdEngine {
       if (load !== null) this.liveTelemetry.engineLoad = load;
       if (specMbar !== null && specMbar > 100) {
         this.liveTelemetry.boostSpecifiedMbar = Math.round(specMbar);
-        this.liveTelemetry.boostSpecifiedBar = Math.round(((specMbar - (this.liveTelemetry.baroPressureKpa ?? 101.3) * 10) / 1000) * 100) / 100;
       }
-      if (actMbar !== null && actMbar > 100) {
-        const boostBar = Math.round(((actMbar - (this.liveTelemetry.baroPressureKpa ?? 101.3) * 10) / 1000) * 100) / 100;
+      if (specMbar !== null && specMbar > 100 && this.liveTelemetry.baroPressureKpa != null) {
+        this.liveTelemetry.boostSpecifiedBar = Math.round(((specMbar - this.liveTelemetry.baroPressureKpa * 10) / 1000) * 100) / 100;
+      }
+      if (actMbar !== null && actMbar > 100 && this.liveTelemetry.baroPressureKpa != null) {
+        const boostBar = Math.round(((actMbar - this.liveTelemetry.baroPressureKpa * 10) / 1000) * 100) / 100;
         this.liveTelemetry.boostBar = boostBar;
         this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
         if (this.peakBoost === null || boostBar > this.peakBoost) {
@@ -3045,8 +3048,8 @@ class ObdEngine {
       const actMbar = numVal(cells[3]);
       if (iat !== null) this.liveTelemetry.iat = Math.round(iat);
       if (n75 !== null) this.liveTelemetry.n75DutyCycle = Math.round(n75 * 10) / 10;
-      if (actMbar !== null && actMbar > 100) {
-        const boostBar = Math.round(((actMbar - (this.liveTelemetry.baroPressureKpa ?? 101.3) * 10) / 1000) * 100) / 100;
+      if (actMbar !== null && actMbar > 100 && this.liveTelemetry.baroPressureKpa != null) {
+        const boostBar = Math.round(((actMbar - this.liveTelemetry.baroPressureKpa * 10) / 1000) * 100) / 100;
         this.liveTelemetry.boostBar = boostBar;
         this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
       }
