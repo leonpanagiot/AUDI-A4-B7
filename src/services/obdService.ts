@@ -2233,6 +2233,22 @@ class ObdEngine {
       return null;
     }
 
+    // KWP/OBD negative response: 7F 01 12 = service/subfunction unsupported.
+    // Unlike a transient timeout, retrying this every cycle wastes ~230 ms.
+    const normalizedHex = upperRaw.replace(/[^0-9A-F]/g, '');
+    const negativeMode01 = /7F0112|7F0111/.test(normalizedHex);
+    if (pid.startsWith('01') && negativeMode01) {
+      entry.status = 'no_data';
+      entry.parsedValue = 'N/A (ECU: 7F 01 12/11, μη υποστηριζόμενο)';
+      entry.failCount++;
+      this.debugState.totalErrors++;
+      this.unsupportedPids.add(pid);
+      this.updateSupportedSensorCount();
+      this.recordCommandLog(pid, raw, 'UNSUPPORTED BY ECU - removed from live polling', latency, false);
+      this.debugState.pidTable[pid] = entry;
+      return null;
+    }
+
     const parsedStr = parser(raw);
     if (parsedStr !== null) {
       if (entry.lastValidTimestampMs > 0) {
@@ -2732,6 +2748,7 @@ class ObdEngine {
     if (this.isNoData(upper) && !upper.includes('41')) return null;
 
     const cleanHex = upper.replace(/[^0-9A-F]/g, '');
+    if (cleanHex.includes('7F0112') || cleanHex.includes('7F0111')) return null;
     const header = '41' + pidHex.toUpperCase();
     const idx = cleanHex.indexOf(header);
     if (idx === -1) return null;
