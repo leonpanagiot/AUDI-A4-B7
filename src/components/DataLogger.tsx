@@ -127,15 +127,22 @@ export const DataLogger: React.FC<Props> = ({ telemetry }) => {
   };
 
   const handleSelectAll = () => {
-    setSelectedKeys(LOG_PARAM_CATALOG.map(c => c.key));
+    setSelectedKeys(availableConfigs.map(c => c.key));
   };
 
   const handleSelectObdRealPreset = () => {
-    setSelectedKeys(['rpm', 'maf', 'engineLoad', 'throttle', 'timing', 'coolant', 'iat', 'oilTemp', 'stft', 'ltft', 'lambda', 'o2After', 'speed', 'battery']);
+    setSelectedKeys(availableConfigs.filter(c => ['rpm', 'maf', 'engineLoad', 'throttle', 'timing', 'coolant', 'iat', 'stft', 'ltft', 'lambda', 'o2After', 'speed', 'battery'].includes(c.key)).map(c => c.key));
   };
 
-  const activeConfigs = LOG_PARAM_CATALOG.filter(c => selectedKeys.includes(c.key));
   const currentLiveSnapshot = buildSnapshotFromTelemetry(telemetry);
+  // Hide sensors that are unavailable, but do not confuse a valid zero with N/A.
+  // Preserve a channel if it has ever supplied valid data in this recording.
+  const availableConfigs = LOG_PARAM_CATALOG.filter(c => {
+    const value = currentLiveSnapshot[c.key];
+    return (typeof value === 'number' && Number.isFinite(value)) ||
+      logEntries.some(entry => typeof entry[c.key] === 'number' && Number.isFinite(entry[c.key] as number));
+  });
+  const activeConfigs = availableConfigs.filter(c => selectedKeys.includes(c.key));
 
   const handleDownloadCsv = () => {
     if (logEntries.length === 0) return;
@@ -179,7 +186,7 @@ export const DataLogger: React.FC<Props> = ({ telemetry }) => {
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Καταγράφονται αποκλειστικά πραγματικές τιμές αισθητήρων από την ECU. Μη υποστηριζόμενοι αισθητήρες καταγράφονται ως <strong>N/A</strong>.
+            Εμφανίζονται μόνο διαθέσιμες παράμετροι. Οι αισθητήρες με N/A αποκρύπτονται αυτόματα από τη λίστα και την καταγραφή.
           </p>
         </div>
 
@@ -193,7 +200,7 @@ export const DataLogger: React.FC<Props> = ({ telemetry }) => {
             }`}
           >
             <SlidersHorizontal className="w-4 h-4 text-blue-400" />
-            <span>Λίστα Παραμέτρων ({selectedKeys.length}/{LOG_PARAM_CATALOG.length})</span>
+            <span>Λίστα Παραμέτρων ({activeConfigs.length}/{availableConfigs.length})</span>
           </button>
 
           <button
@@ -245,7 +252,7 @@ export const DataLogger: React.FC<Props> = ({ telemetry }) => {
             <div className="flex items-center gap-2">
               <CheckSquare className="w-4 h-4 text-blue-400" />
               <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                Επιλογή Παραμέτρων προς Καταγραφή ({selectedKeys.length} επιλεγμένα)
+                Επιλογή Παραμέτρων προς Καταγραφή ({activeConfigs.length} επιλεγμένα)
               </h4>
             </div>
             <div className="flex items-center flex-wrap gap-1.5 text-[11px]">
@@ -259,13 +266,13 @@ export const DataLogger: React.FC<Props> = ({ telemetry }) => {
                 onClick={handleSelectAll}
                 className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition cursor-pointer"
               >
-                Επιλογή Όλων ({LOG_PARAM_CATALOG.length})
+                Επιλογή Όλων ({availableConfigs.length})
               </button>
             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-            {LOG_PARAM_CATALOG.map((param) => {
+            {availableConfigs.map((param) => {
               const checked = selectedKeys.includes(param.key);
               const liveVal = currentLiveSnapshot[param.key];
               return (
