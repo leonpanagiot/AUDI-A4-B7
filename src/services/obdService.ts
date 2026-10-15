@@ -2668,6 +2668,10 @@ class ObdEngine {
     this.isPollingRunning = true;
 
     const allPidsOrder = INITIAL_PID_CATALOG.map(i => i.pid);
+    // A complete cycle is the time to revisit each eligible PID once.
+    // Rotate the starting PID each cycle so slow responses do not always
+    // penalize the same sensors at the end of the queue.
+    let nextStartIndex = 0;
 
     while (this.isPolling && (this.mode === 'bluetooth' || this.mode === 'wifi')) {
       if (!this.debugState.ecuLocked) {
@@ -2679,8 +2683,11 @@ class ObdEngine {
       try {
         const supportedQueue = allPidsOrder.filter(pid => !this.unsupportedPids.has(pid));
         this.debugState.supportedSensorsCount = supportedQueue.length;
+        const start = supportedQueue.length ? nextStartIndex % supportedQueue.length : 0;
+        const fairQueue = supportedQueue.slice(start).concat(supportedQueue.slice(0, start));
+        nextStartIndex++;
 
-        for (const pid of supportedQueue) {
+        for (const pid of fairQueue) {
           if (!this.isPolling || !this.debugState.ecuLocked || (this.mode !== 'bluetooth' && this.mode !== 'wifi')) break;
           await this.pollSinglePidIfSupported(pid);
         }
