@@ -2064,6 +2064,71 @@ class ObdEngine {
     return raw;
   }
 
+  /**
+   * Read-only discovery of standard Mode 01 sensors on the existing ECU session.
+   * No protocol switching, ECU addressing, session control or write commands.
+   */
+  public async scanAllSensors(): Promise<string> {
+    if (this.mode === 'disconnected' || !this.debugState.ecuLocked) {
+      return 'Απαιτείται ενεργή και επιβεβαιωμένη σύνδεση ECU.';
+    }
+    const wasPolling = this.isPolling;
+    this.stopRealObdPolling();
+    for (let i = 0; i < 100 && this.isPollingRunning; i++) await this.sleep(100);
+    if (this.isPollingRunning) return 'Το polling δεν σταμάτησε. Το scan ακυρώθηκε.';
+    const found: string[] = [];
+    let checked = 0;
+    try {
+      // Mode 01 support bitmasks: 00,20,...,C0. Probe only advertised PIDs.
+      for (let base = 0; base <= 0xC0; base += 0x20) {
+        const maskPid = '01' + base.toString(16).toUpperCase().padStart(2, '0');
+        const raw = await this.sendObdCommand(maskPid);
+        this.recordCommandLog('SCAN ' + maskPid, raw, 'Supported PID bitmap', 0, this.isNoData(raw));
+        const normalized = raw.toUpperCase().replace(/[^0-9A-F]/g, '');
+        const prefix = '41' + base.toString(16).toUpperCase().padStart(2, '0');
+        const pos = normalized.indexOf(prefix);
+        if (pos < 0 || normalized.length < pos + 12) break;
+        const mask = normalized.slice(pos + 2, pos + 10);
+        if (!/^[0-9A-F]{8}$/.test(mask)) break;
+        for (let offset = 1; offset <= 32; offset++) {
+          const byte = parseInt(mask.slice(Math.floor((offset - 1) / 8) * 2, Math.floor((offset - 1) / 8) * 2 + 2), 16);
+          if (!(byte & (0x80 >> ((offset - 1) % 8)))) continue;
+          const pidNumber = base + offset;
+          if (pidNumber % 0x20 === 0 || pidNumber > 0xDF) continue;
+          const pid = '01' + pidNumber.toString(16).toUpperCase().padStart(2, '0');
+          checked++;
+          const response = await this.sendObdCommand(pid);
+          const compact = response.toUpperCase().replace(/[^0-9A-F]/g, '');
+          const valid = compact.includes('41' + pid.slice(2)) && !/7F01(?:11|12|31)/.test(compact);
+          this.recordCommandLog('SCAN ' + pid, response, valid ? 'SUPPORTED' : 'NO VALID DATA', 0, !valid);
+          if (valid) {
+            found.push(pid);
+            if (!this.debugState.pidTable[pid]) {
+              this.debugState.pidTable[pid] = {
+                pid, name: 'Discovered Mode 01 PID ' + pid, rawResponse: response,
+                parsedValue: 'Raw hex (not decoded)', latencyMs: 0, bridgeLatencyMs: 0,
+                timeoutMs: 750, retries: 0, refreshIntervalMs: 0,
+                lastValidTimestampMs: Date.now(), status: 'success',
+                successCount: 1, failCount: 0, lastUpdated: new Date().toLocaleTimeString('el-GR')
+              };
+            }
+          }
+          this.notifyDebug();
+        }
+        if (!(parseInt(mask.slice(6, 8), 16) & 1)) break;
+      }
+    } catch (e: any) {
+      this.recordCommandLog('SCAN ERROR', String(e?.message || e), 'Scan stopped', 0, true);
+    } finally {
+      if (wasPolling && this.debugState.ecuLocked) this.startRealObdPolling();
+      this.notifyDebug();
+    }
+    const summary = `Scan All Sensors: ${found.length}/${checked} απάντησαν. PIDs: ${found.join(', ') || 'κανένα'}`;
+    this.recordCommandLog('SCAN RESULT', summary, summary, 0, false);
+    this.notifyDebug();
+    return summary;
+  }
+
   public async runFullSensorDiagnosticSweep(): Promise<void> {
     if (this.mode === 'disconnected') {
       this.notifyError('Συνδεθείτε πρώτα με το OBD2 dongle για εκτέλεση διαγνωστικού τεστ αισθητήρων.');
@@ -2348,7 +2413,38 @@ class ObdEngine {
    * Immediately pushes the updated real telemetry to the UI after each valid sensor response.
    * Strictly NO fabricated/calculated values!
    */
+  /**
+   * Estimated manifold gauge pressure from MAF, RPM and intake temperature.
+   * 1.8 L four-stroke engine, assumed VE=0.85 and standard atmospheric pressure
+   * when PID 0133 is unavailable. This is NOT ECU-measured turbo pressure.
+   */
+  private updateCalculatedBoost(): void {
+    const { rpm, mafGramsPerSec: maf, iat } = this.liveTelemetry;
+    if (rpm === null || rpm < 450 || maf === null || maf <= 0 || iat === null) {
+      this.liveTelemetry.boostBar = null;
+      this.liveTelemetry.boostPsi = null;
+      return;
+    }
+    const kelvin = iat + 273.15;
+    const ve = 0.85; // Assumed volumetric efficiency; approximate only
+    const manifoldKpa = (maf * 0.001 * 120 * 287.05 * kelvin) / (rpm * 0.0018 * ve * 1000);
+    const atmosphereKpa = this.liveTelemetry.baroPressureKpa ?? 101.325;
+    const boostBar = (manifoldKpa - atmosphereKpa) / 100;
+    if (!Number.isFinite(boostBar) || boostBar < -1.1 || boostBar > 3) {
+      this.liveTelemetry.boostBar = null;
+      this.liveTelemetry.boostPsi = null;
+      return;
+    }
+    this.liveTelemetry.boostBar = Math.round(boostBar * 100) / 100;
+    this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
+    if (this.peakBoost === null || boostBar > this.peakBoost) {
+      this.peakBoost = boostBar;
+      this.liveTelemetry.peakBoostBar = Math.round(boostBar * 100) / 100;
+    }
+  }
+
   private pushLiveTelemetryUpdate(): void {
+    this.updateCalculatedBoost();
     this.liveTelemetry.timestamp = Date.now();
     this.notifyTelemetry({ ...this.liveTelemetry });
   }
