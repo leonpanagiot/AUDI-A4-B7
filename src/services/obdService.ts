@@ -20,6 +20,8 @@ export interface PidDebugEntry {
   parsedValue: string;
   latencyMs: number;
   bridgeLatencyMs?: number;
+  timeoutMs: number;
+  retries: number;
   refreshIntervalMs: number;
   lastValidTimestampMs: number;
   status: 'ok' | 'no_data' | 'error' | 'searching' | 'pending';
@@ -245,6 +247,7 @@ export const ZERO_TELEMETRY: TelemetryData = {
   peakBoostBar: null,
   boostSpecifiedBar: null,
   boostSpecifiedMbar: null,
+  baroPressureKpa: null,
   coolantTemp: null,
   iat: null,
   oilTemp: null,
@@ -288,6 +291,7 @@ const INITIAL_PID_CATALOG: Array<{ pid: string; name: string }> = [
   { pid: '0114', name: 'O2 Sensor B1S1 Narrowband (V & Trim)' },
   { pid: '0115', name: 'O2 Sensor B1S2 After Cat (V)' },
   { pid: '0124', name: 'Wideband Lambda B1S1 (PID 0124 λ & V)' },
+  { pid: '0133', name: 'Absolute Barometric Pressure (Baro kPa)' },
   { pid: '0134', name: 'Wideband Lambda B1S1 Current (PID 0134 λ & mA)' },
   { pid: '0142', name: 'Control Module Voltage (ECU V)' },
   { pid: '0144', name: 'Commanded Equivalence Ratio (λ Spec)' },
@@ -502,6 +506,9 @@ class ObdEngine {
 
   // Set of PIDs confirmed unsupported on the connected ECU so we NEVER waste K-Line time on NO DATA
   private unsupportedPids: Set<string> = new Set();
+
+  // Active protocol command string (e.g. 'ATSPA4', 'ATSP4', 'ATSP0') preserved exactly across reconnections
+  private activeProtocolCmd: string = 'ATSPA4';
 
   // Android Native Wi-Fi / Bluetooth SPP Bridge timing measurement
   private lastBridgeLatencyMs: number = 0;
@@ -1608,6 +1615,7 @@ class ObdEngine {
         const val00 = this.validatePid00Response(resp0100);
         if (val00.valid && val00.bytes) {
           locked = true;
+          this.activeProtocolCmd = protoCmd;
           const maskHex = val00.bytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
           this.recordCommandLog('0100', resp0100, `ECU LOCKED (${protoCmd}) [${dur0100}ms] - Bitmask: ${maskHex}`, dur0100, false);
           this.debugState.supportedPids0120 = resp0100;
@@ -1623,6 +1631,7 @@ class ObdEngine {
 
         if (resp010C.includes('41 0C') || resp010C.replace(/\s+/g, '').includes('410C')) {
           locked = true;
+          this.activeProtocolCmd = protoCmd;
           this.recordCommandLog('010C', resp010C, `ECU LOCKED via 010C (${protoCmd}) [${durRpm}ms]`, durRpm, false);
           this.unsupportedPids.delete('010C');
           const rpmVal = this.parseRpm(resp010C);
@@ -1640,6 +1649,7 @@ class ObdEngine {
 
         if (resp0105.includes('41 05') || resp0105.replace(/\s+/g, '').includes('4105')) {
           locked = true;
+          this.activeProtocolCmd = protoCmd;
           this.recordCommandLog('0105', resp0105, `ECU LOCKED via 0105 (${protoCmd}) [${durClt}ms]`, durClt, false);
           this.unsupportedPids.delete('0105');
           const cltVal = this.parseCoolant(resp0105);
@@ -1724,7 +1734,10 @@ class ObdEngine {
             ? `Ενεργά: ${lambdaSummary.join(', ')}`
             : 'Κανένα από τα 0114/0124/0134/0144 δεν απάντησε';
 
-        // 7. Explicit Check for PID 010B (Standard MAP / Boost)
+        // 7. Explicit Check for Barometric Pressure (PID 0133) & MAP / Boost (PID 010B)
+        this.unsupportedPids.delete('0133');
+        await this.pollSinglePidIfSupported('0133');
+
         this.unsupportedPids.delete('010B');
         await this.pollSinglePidIfSupported('010B');
         const map010BSupported = !this.unsupportedPids.has('010B');
@@ -1871,12 +1884,20 @@ class ObdEngine {
   }
 
   /**
-   * Probes 17-Instruments (Kombiinstrument - Address 0x17) for real Oil Temperature sensor G266 (Group 050 / 21 32).
-   * Safely pauses Engine polling, configures KWP2000 target header for 17-Instruments (ATSH 81 17 F1 & ATSP5),
-   * checks `10 89` for verified positive response `50 89`, checks `21 32` (Group 050), and then cleanly restores the 01-Engine connection.
-   * Never creates a fake oil temperature!
+   * Temporarily disabled per Requirement 2 to prevent destroying the 01-Engine ECU session.
+   * Does NOT attempt any automatic change to another ECU.
    */
   public async probe17InstrumentsOilTempG266(): Promise<string> {
+    const msg = 'Ο έλεγχος 17-Instruments (G266) είναι προσωρινά απενεργοποιημένος για την προστασία της συνεδρίας της Engine ECU (01-Engine ME7.5).';
+    this.debugState.instruments17G266Status = msg;
+    this.notifyDebug();
+    return msg;
+  }
+
+  /**
+   * Isolated probe for 17-Instruments with exact protocol restoration & ECU lock verification.
+   */
+  public async probe17InstrumentsOilTempG266Isolated(): Promise<string> {
     if (this.mode === 'disconnected') {
       const msg = 'Απαιτείται ενεργή σύνδεση με το OBD-II dongle.';
       this.notifyError(msg);
@@ -1887,16 +1908,15 @@ class ObdEngine {
     this.stopRealObdPolling();
     await this.sleep(150);
 
-    const savedProtoNum = (this.debugState.protocolNum || '').replace(/[^0-9A-F]/gi, '');
+    const exactProtoCmd = this.activeProtocolCmd || 'ATSPA4';
     this.notifyStatus('Δοκιμή ανάγνωσης G266 (Θερμ. Λαδιού) από 17-Instruments (Καντράν)...', this.mode);
     this.debugState.instruments17G266Status = 'Σε εξέλιξη σύνδεση με 17-Instruments...';
     this.notifyDebug();
 
     let resultMsg = '';
     try {
-      // Configure KWP2000 header targeting 17-Instruments (physical address 0x17, tester 0xF1)
       await this.sendObdCommand('ATSH 81 17 F1');
-      await this.sendObdCommand('ATIIA 17'); // ISO 5-baud init address 0x17 (if supported by ELM v1.4+)
+      await this.sendObdCommand('ATIIA 17');
       await this.sendObdCommand('ATSP5');
 
       const r1089 = await this.sendObdCommand('1089');
@@ -1913,48 +1933,42 @@ class ObdEngine {
       );
 
       if (!sessionConfirmed) {
-        // Module 17 did not accept KWP2000 10 89 session (standard for A4 B7 where cluster uses KW1281 / TP2.0 CAN)
-        resultMsg = `Το καντράν (17-Instruments, διεύθυνση 0x17) δεν απάντησε με θετική συνεδρία KWP2000 50 89 (Απάντηση 1089: "${(r1089 || 'NO DATA').trim()}"). Στο Audi A4 B7 (8E / Bosch RB8), το καντράν επικοινωνεί μέσω VAG KW1281 (K-Line 5-baud @ 0x17) ή TP2.0 CAN, τα οποία δεν υποστηρίζονται από το υλικολογισμικό του ELM327 (απαιτείται διαγνωστικό VCDS / VCP). Η θερμοκρασία λαδιού G266 παραμένει αυστηρά N/A.`;
+        resultMsg = `17-Instruments (0x17) δεν απάντησε με θετική συνεδρία KWP2000 50 89. Η θερμοκρασία G266 παραμένει N/A.`;
       } else {
-        // Session confirmed: now test Group 050 (`2132`)
         const r2132 = await this.sendObdCommand('2132');
-        this.recordCommandLog(
-          '17-INST:2132',
-          r2132 || 'NO DATA',
-          'Έλεγχος Group 050 (G266) στο 17-Instruments',
-          0,
-          !r2132.includes('61')
-        );
-
         const cells50 = this.decodeKwpBlockResponse(r2132, '32');
         if (cells50) {
-          // In 17-Instruments Group 050, Field 3 is Oil Temperature G266 in °C (Formula 0x05 / 0x08)
           const field3Str = cells50[2];
           const parsedTemp = parseFloat(field3Str);
           if (field3Str.includes('°C') && !isNaN(parsedTemp) && parsedTemp >= 30 && parsedTemp <= 170) {
             this.liveTelemetry.oilTemp = Math.round(parsedTemp);
             this.pushLiveTelemetryUpdate();
-            resultMsg = `ΕΠΙΤΥΧΙΑ 17-Instruments Group 050 (2132): G266 = ${Math.round(parsedTemp)} °C [Raw: ${r2132.trim()}]`;
+            resultMsg = `ΕΠΙΤΥΧΙΑ 17-Instruments Group 050 (2132): G266 = ${Math.round(parsedTemp)} °C`;
           } else {
-            resultMsg = `17-Instruments απάντησε (${cells50.join(' | ')}), αλλά το πεδίο 3 δεν περιέχει έγκυρη θερμοκρασία G266. Η ένδειξη παραμένει N/A.`;
+            resultMsg = `17-Instruments Group 050 -> ${cells50.join(' | ')}. G266 παραμένει N/A.`;
           }
         } else {
-          resultMsg = `Το 17-Instruments δέχθηκε το 10 89, αλλά το Group 050 (21 32) επέστρεψε: "${(r2132 || 'NO DATA').trim()}". Η θερμοκρασία G266 παραμένει αυστηρά N/A.`;
+          resultMsg = `17-Instruments Group 050 (21 32) -> NO DATA. G266 παραμένει N/A.`;
         }
       }
     } catch (e: any) {
       resultMsg = `Σφάλμα κατά τον έλεγχο 17-Instruments: ${e.message || e}`;
     } finally {
-      // Reliably restore standard 01-Engine OBD-II addressing, protocol and state
       this.notifyStatus('Επαναφορά σύνδεσης με 01-Engine ECU...', this.mode);
       await this.sendObdCommand('ATIIA 33');
       await this.sendObdCommand('ATSH 68 6A F1');
       await this.sendObdCommand('ATH0');
-      const restoreCmd = savedProtoNum ? `ATSP${savedProtoNum.charAt(savedProtoNum.length - 1)}` : 'ATSP3';
-      await this.initializeAndLockEcu(restoreCmd);
+
+      // Complete ECU LOCK verification using exact saved protocol string (e.g. ATSPA4 / ATSP0)
+      const reinitLocked = await this.initializeAndLockEcu(exactProtoCmd);
       this.debugState.instruments17G266Status = resultMsg;
       this.notifyDebug();
-      if (wasPolling) {
+
+      if (!reinitLocked || !this.debugState.ecuLocked) {
+        this.isPolling = false;
+        this.isPollingRunning = false;
+        this.notifyStatus('Αποσύνδεση ECU κατά την επαναφορά 17-Instruments. Απαιτείται καθαρή επανασύνδεση.', this.mode);
+      } else if (wasPolling) {
         this.startRealObdPolling();
       }
     }
@@ -2184,6 +2198,8 @@ class ObdEngine {
       parsedValue: 'N/A',
       latencyMs: 0,
       bridgeLatencyMs: 0,
+      timeoutMs: (pid.startsWith('0100') || pid === '010C' || pid.startsWith('AT')) ? 6500 : 750,
+      retries: 0,
       refreshIntervalMs: 0,
       lastValidTimestampMs: 0,
       status: 'pending',
@@ -2195,7 +2211,23 @@ class ObdEngine {
     entry.rawResponse = raw || 'EMPTY';
     entry.latencyMs = latency;
     entry.bridgeLatencyMs = this.lastBridgeLatencyMs > 0 ? this.lastBridgeLatencyMs : undefined;
+    entry.timeoutMs = (pid.startsWith('0100') || pid === '010C' || pid.startsWith('AT')) ? 6500 : 750;
+    entry.retries = 0;
     entry.lastUpdated = nowStr;
+
+    const upperRaw = (raw || '').toUpperCase();
+    if (upperRaw.includes('BUS INIT: ERROR') || upperRaw.includes('UNABLE TO CONNECT') || upperRaw.includes('CAN ERROR') || upperRaw.includes('STOPPED')) {
+      entry.status = 'error';
+      entry.parsedValue = 'BUS INIT ERROR';
+      entry.failCount++;
+      this.debugState.totalErrors++;
+      this.debugState.ecuLocked = false;
+      this.stopRealObdPolling();
+      this.recordCommandLog(pid, raw, 'BUS INIT ERROR (Χάθηκε η σύνδεση ECU)', latency, true);
+      this.notifyStatus('Χάθηκε η σύνδεση με την Engine ECU (BUS INIT: ERROR). Απαιτείται καθαρή επανασύνδεση.', this.mode);
+      this.debugState.pidTable[pid] = entry;
+      return null;
+    }
 
     const parsedStr = parser(raw);
     if (parsedStr !== null) {
@@ -2361,8 +2393,9 @@ class ObdEngine {
       case '010B':
         await this.executeTrackedPid('010B', 'Intake Manifold Absolute Pressure (MAP kPa)', (raw) => {
           const val = this.parseMap(raw);
-          if (val !== null && val > 10) {
-            const boostBar = Math.round(((val - 101.3) / 100) * 100) / 100;
+          if (val !== null && val >= 10) {
+            const baroKpa = this.liveTelemetry.baroPressureKpa ?? 101.3;
+            const boostBar = Math.round(((val - baroKpa) / 100) * 100) / 100;
             this.liveTelemetry.boostBar = boostBar;
             this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
             if (this.peakBoost === null || boostBar > this.peakBoost) {
@@ -2370,7 +2403,7 @@ class ObdEngine {
               this.liveTelemetry.peakBoostBar = boostBar;
             }
             updated = true;
-            return `${val} kPa (${boostBar >= 0 ? '+' : ''}${boostBar.toFixed(2)} bar)`;
+            return `${val} kPa MAP (${boostBar >= 0 ? '+' : ''}${boostBar.toFixed(2)} bar relative, Baro: ${baroKpa.toFixed(1)} kPa)`;
           }
           return null;
         });
@@ -2469,6 +2502,18 @@ class ObdEngine {
             this.liveTelemetry.o2SensorVoltage = p.voltage;
             updated = true;
             return `λ=${p.lambda.toFixed(3)} (${p.voltage.toFixed(2)}V)`;
+          }
+          return null;
+        });
+        break;
+
+      case '0133':
+        await this.executeTrackedPid('0133', 'Absolute Barometric Pressure (Baro kPa)', (raw) => {
+          const baroKpa = this.parseBaro(raw);
+          if (baroKpa !== null && baroKpa >= 50 && baroKpa <= 120) {
+            this.liveTelemetry.baroPressureKpa = baroKpa;
+            updated = true;
+            return `${baroKpa} kPa`;
           }
           return null;
         });
@@ -2618,13 +2663,18 @@ class ObdEngine {
     const allPidsOrder = INITIAL_PID_CATALOG.map(i => i.pid);
 
     while (this.isPolling && (this.mode === 'bluetooth' || this.mode === 'wifi')) {
+      if (!this.debugState.ecuLocked) {
+        this.isPolling = false;
+        break;
+      }
+
       const cycleStart = performance.now();
       try {
         const supportedQueue = allPidsOrder.filter(pid => !this.unsupportedPids.has(pid));
         this.debugState.supportedSensorsCount = supportedQueue.length;
 
         for (const pid of supportedQueue) {
-          if (!this.isPolling || (this.mode !== 'bluetooth' && this.mode !== 'wifi')) break;
+          if (!this.isPolling || !this.debugState.ecuLocked || (this.mode !== 'bluetooth' && this.mode !== 'wifi')) break;
           await this.pollSinglePidIfSupported(pid);
         }
 
@@ -2692,6 +2742,11 @@ class ObdEngine {
 
   private parseMap(resp: string): number | null {
     const b = this.extractPidBytes(resp, '0B', 1);
+    return b ? b[0] : null;
+  }
+
+  private parseBaro(resp: string): number | null {
+    const b = this.extractPidBytes(resp, '33', 1);
     return b ? b[0] : null;
   }
 

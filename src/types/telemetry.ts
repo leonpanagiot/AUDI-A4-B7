@@ -24,6 +24,7 @@ export interface TelemetryData {
   peakBoostBar: number | null;
   boostSpecifiedBar?: number | null;
   boostSpecifiedMbar?: number | null;
+  baroPressureKpa?: number | null; // Atmospheric Baro Pressure kPa (PID 0133)
   coolantTemp: number | null; // °C (PID 0105)
   iat: number | null; // Intake Air Temp °C (PID 010F)
   oilTemp: number | null; // °C (PID 015C - null/N/A if unsupported)

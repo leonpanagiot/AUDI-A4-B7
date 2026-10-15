@@ -343,9 +343,14 @@ public class MainActivity extends AppCompatActivity {
                             sb.append(chunk);
                             String current = sb.toString().toUpperCase();
                             
-                            // If ELM327 is performing K-Line 5-baud bus init, extend wait up to 9.5s
+                            // Break immediately on explicit bus error or disconnection responses
+                            if (current.contains("BUS INIT: ERROR") || current.contains("UNABLE TO CONNECT") || current.contains("CAN ERROR") || current.contains("STOPPED")) {
+                                break;
+                            }
+
+                            // If ELM327 is performing initial K-Line 5-baud bus init, extend wait up to 6.5s
                             if (current.contains("SEARCHING") || current.contains("BUS INIT")) {
-                                maxWait = 9500;
+                                maxWait = 6500;
                             }
                             
                             // Prompt character '>' strictly marks the end of ELM327 transmission

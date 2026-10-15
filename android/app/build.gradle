@@ -34,3 +34,15 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'androidx.webkit:webkit:1.10.0'
 }
+
+task buildWebAssets(type: Exec) {
+    workingDir '../../'
+    if (System.getProperty('os.name').toLowerCase().contains('windows')) {
+        commandLine 'cmd', '/c', 'npm run build && powershell -Command "Copy-Item -Path dist\\* -Destination android\\app\\src\\main\\assets -Recurse -Force"'
+    } else {
+        commandLine 'sh', '-c', 'npm run build && cp -r dist/* android/app/src/main/assets/'
+    }
+}
+
+preBuild.dependsOn buildWebAssets
+
