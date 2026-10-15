@@ -166,7 +166,7 @@ export const AnalogBoostGauge: React.FC<Props> = ({
             );
           })}
 
-          {/* Audi RS BFB Badge on Dial */}
+          {/* Audi 1.8T Badge on Dial */}
           <g transform={`translate(${center - 45}, 90)`}>
             <rect x="0" y="0" width="90" height="22" rx="4" fill="#0b0f19" stroke="#ef4444" strokeWidth="1.2" opacity="0.9" />
             <rect x="2" y="2" width="16" height="18" rx="2" fill="#ef4444" />
@@ -180,7 +180,7 @@ export const AnalogBoostGauge: React.FC<Props> = ({
               letterSpacing="2"
               textAnchor="middle"
             >
-              1.8T BFB
+              1.8T
             </text>
           </g>
 

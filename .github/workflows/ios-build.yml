@@ -1,0 +1,78 @@
+name: iOS Build Check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/telemetry-polling-20261015]
+    paths:
+      - 'src/**'
+      - 'ios-native/**'
+      - 'capacitor.config.ts'
+      - 'package.json'
+      - '.github/workflows/ios-build.yml'
+
+jobs:
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Install macOS TypeScript native compiler
+        run: npm install --no-save --no-package-lock @typescript/typescript-darwin-arm64
+      - name: Check TypeScript
+        run: npm run lint
+      - name: Build web app
+        run: npm run build
+      - name: Generate Capacitor iOS project
+        run: npx cap add ios
+      - name: Copy native iOS bridge
+        run: |
+          cp ios-native/IosObdPlugin.swift ios/App/App/
+          cp ios-native/AudiBridgeViewController.swift ios/App/App/
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('ios/App/App/Base.lproj/Main.storyboard')
+          s=p.read_text()
+          s=s.replace('customClass="CAPBridgeViewController"', 'customClass="AudiBridgeViewController"')
+          p.write_text(s)
+          p=Path('ios/App/App/Info.plist')
+          s=p.read_text().replace('</dict>', '<key>NSLocalNetworkUsageDescription</key><string>Σύνδεση με WiFi OBD2 για δεδομένα ECU.</string></dict>')
+          p.write_text(s)
+          PY
+      - name: Register Swift bridge in Xcode target
+        run: |
+          ruby - <<'RUBY'
+          require 'xcodeproj'
+          project = Xcodeproj::Project.open('ios/App/App.xcodeproj')
+          target = project.targets.find { |t| t.name == 'App' }
+          abort 'App target missing' unless target
+          group = project.main_group.find_subpath('App', true)
+          %w[IosObdPlugin.swift AudiBridgeViewController.swift].each do |filename|
+            ref = group.files.find { |file| file.path == filename } || group.new_file(filename)
+            target.source_build_phase.add_file_reference(ref) unless target.source_build_phase.files_references.include?(ref)
+          end
+          project.save
+          RUBY
+      - name: Sync iOS
+        run: npx cap sync ios
+      - name: Compile iOS simulator (unsigned)
+        run: |
+          echo "Available iOS Xcode containers:"
+          find ios -maxdepth 4 \( -name '*.xcworkspace' -o -name '*.xcodeproj' \) -print
+          if [ -d ios/App/App.xcworkspace ]; then
+            xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+          elif [ -d ios/App/App.xcodeproj ]; then
+            xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+          else
+            echo "::error::No Xcode project found after Capacitor generation"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audi-live-ios-project
+          path: ios/
+          retention-days: 7

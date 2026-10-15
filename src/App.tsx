@@ -116,17 +116,17 @@ export default function App() {
               <div className="flex items-center gap-1.5">
                 <span className="w-3.5 h-4 bg-red-600 rounded-sm skew-x-[-12deg]" />
                 <h1 className="text-sm sm:text-base font-black tracking-wider text-white uppercase font-mono">
-                  AudiBFB <span className="text-red-500">Live</span>
+                  AUDI <span className="text-red-500">Live</span>
                 </h1>
               </div>
             </div>
 
             <div
               className="hidden md:inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300"
-              title="Audi A4 B7 1.8T 20V (BFB / Bosch ME7.5)"
+              title="Audi A4 B7 1.8T 20V (Bosch ME7.5)"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-              <span>1.8T 20V BFB</span>
+              <span>1.8T 20V</span>
               <span className="text-slate-400">(Bosch ME7.5)</span>
             </div>
           </div>
@@ -231,82 +231,67 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => isEcuLocked && setActiveTab('cockpit')}
-            disabled={!isEcuLocked}
+            onClick={() => setActiveTab('cockpit')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition whitespace-nowrap ${
-              !isEcuLocked
-                ? 'opacity-40 cursor-not-allowed text-slate-500'
-                : activeTab === 'cockpit'
+              activeTab === 'cockpit'
                 ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
-            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU (ECU LOCK)' : 'Ζωντανά Όργανα'}
+            title="Ζωντανά Όργανα"
           >
-            {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Gauge className="w-3.5 h-3.5" />}
+            <Gauge className="w-3.5 h-3.5" />
             <span>Ζωντανά Όργανα</span>
           </button>
 
           <button
-            onClick={() => isEcuLocked && setActiveTab('vagblocks')}
-            disabled={!isEcuLocked}
+            onClick={() => setActiveTab('vagblocks')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition whitespace-nowrap ${
-              !isEcuLocked
-                ? 'opacity-40 cursor-not-allowed text-slate-500'
-                : activeTab === 'vagblocks'
+              activeTab === 'vagblocks'
                 ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
-            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'VAG Measuring Blocks'}
+            title="VAG Measuring Blocks"
           >
-            {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Layers className="w-3.5 h-3.5 text-blue-400" />}
+            <Layers className="w-3.5 h-3.5 text-blue-400" />
             <span>VAG Groups (001-255)</span>
           </button>
 
           <button
-            onClick={() => isEcuLocked && setActiveTab('logger')}
-            disabled={!isEcuLocked}
+            onClick={() => setActiveTab('logger')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition whitespace-nowrap ${
-              !isEcuLocked
-                ? 'opacity-40 cursor-not-allowed text-slate-500'
-                : activeTab === 'logger'
+              activeTab === 'logger'
                 ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
-            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'Datalogger CSV'}
+            title="Datalogger CSV"
           >
-            {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Database className="w-3.5 h-3.5" />}
+            <Database className="w-3.5 h-3.5" />
             <span>Datalogger CSV</span>
           </button>
 
           <button
-            onClick={() => isEcuLocked && setActiveTab('dtc')}
-            disabled={!isEcuLocked}
+            onClick={() => setActiveTab('dtc')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition whitespace-nowrap ${
-              !isEcuLocked
-                ? 'opacity-40 cursor-not-allowed text-slate-500'
-                : activeTab === 'dtc'
+              activeTab === 'dtc'
                 ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
-            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'Διαγνωστικό DTC'}
+            title="Διαγνωστικό DTC"
           >
-            {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Wrench className="w-3.5 h-3.5" />}
+            <Wrench className="w-3.5 h-3.5" />
             <span>Διαγνωστικό DTC {activeDTCs.length > 0 && `(${activeDTCs.length})`}</span>
           </button>
 
           <button
-            onClick={() => isEcuLocked && setActiveTab('timer')}
-            disabled={!isEcuLocked}
+            onClick={() => setActiveTab('timer')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold uppercase tracking-wider transition whitespace-nowrap ${
-              !isEcuLocked
-                ? 'opacity-40 cursor-not-allowed text-slate-500'
-                : activeTab === 'timer'
+              activeTab === 'timer'
                 ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
-            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'Draggy'}
+            title="Draggy"
           >
-            {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Timer className="w-3.5 h-3.5" />}
+            <Timer className="w-3.5 h-3.5" />
             <span>Draggy</span>
           </button>
 
@@ -328,7 +313,7 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl mx-auto w-full p-3 sm:p-6 space-y-5">
         {/* Initial Connection Hub View (Shown on launch until ECU is locked) */}
-        {(activeTab === 'connect' || (!isEcuLocked && activeTab !== 'debug')) && (
+        {activeTab === 'connect' && (
           <div className="space-y-6">
             <ThrottleSimulatorControl
               mode={connectionMode}
@@ -344,7 +329,7 @@ export default function App() {
                 </div>
                 <div className="max-w-xl mx-auto space-y-2">
                   <h2 className="text-lg sm:text-xl font-black font-mono tracking-wide text-white uppercase">
-                    Εκκίνηση AudiBFB Live
+                    Εκκίνηση AUDI Live
                   </h2>
                   <p className="text-sm text-slate-300 leading-relaxed font-sans">
                     Η εφαρμογή βρίσκεται σε <strong>κατάσταση ασφαλούς αναμονής σύνδεσης</strong>.
@@ -370,7 +355,7 @@ export default function App() {
         )}
 
         {/* Tab 1: Cockpit / Telemetry (Active only once ECU is confirmed locked) */}
-        {activeTab === 'cockpit' && isEcuLocked && (
+        {activeTab === 'cockpit' && (
           <div className="space-y-5">
             {focusedPid ? <FocusedSensorGraph pid={focusedPid} onClose={() => setFocusedPid(null)} /> : <>
             {/* OBD-II Connection Control Bar */}
@@ -460,7 +445,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>AudiBFB Live • Audi A4 B7 1.8T 20V (Bosch ME7.5)</span>
+            <span>AUDI Live • Audi A4 B7 1.8T 20V (Bosch ME7.5)</span>
           </div>
           <div className="flex items-center gap-4">
             <button

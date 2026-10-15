@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+import { iosObd } from './iosObd';
 import { TelemetryData, DTCFault, DtcScanDebugInfo, EngineStageId, EngineStageConfig, FuelOctane, VagBlockGroup, VagBlockField } from '../types/telemetry';
 import { lookupAndTranslateDtcToGreek } from './vagDtcDictionary';
 
@@ -1467,6 +1469,32 @@ class ObdEngine {
       }
     }
 
+    if (Capacitor.getPlatform() === 'ios') {
+      try {
+        await iosObd.connect({ host: this.wifiConfig.ip, port: this.wifiConfig.port });
+        this.mode = 'wifi';
+        this.debugState.bridgeType = 'iOS Native TCP Socket (WiFi)';
+        this.debugState.deviceName = 'WiFi ELM327';
+        this.debugState.deviceAddress = this.wifiConfig.ip + ':' + this.wifiConfig.port;
+        this.notifyDebug();
+        this.notifyStatus('Συνδέθηκε WiFi OBD-II μέσω iPhone. Κλείδωμα ECU...', 'wifi');
+        const locked = await this.initializeAndLockEcu();
+        if (locked) {
+          this.startRealObdPolling();
+          return true;
+        }
+        this.stopRealObdPolling();
+        this.notifyStatus('WiFi dongle συνδεδεμένο, αλλά η ECU δεν απάντησε. Ελέγξτε την ανάφλεξη.', 'wifi');
+        return false;
+      } catch (error: any) {
+        this.debugState.lastError = error?.message || String(error);
+        this.notifyDebug();
+        this.notifyError('Σφάλμα iOS WiFi OBD: ' + this.debugState.lastError);
+        this.mode = 'disconnected';
+        return false;
+      }
+    }
+
     this.notifyError('Η σύνδεση WiFi OBD απαιτεί σύνδεση TCP Socket από τη συσκευή Android.');
     this.mode = 'disconnected';
     this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
@@ -1478,6 +1506,7 @@ class ObdEngine {
     if (this.isNativeAndroid() && window.AndroidOBD) {
       window.AndroidOBD.disconnect();
     }
+    if (Capacitor.getPlatform() === 'ios') void iosObd.disconnect();
     this.mode = 'disconnected';
     this.debugState.ecuLocked = false;
     this.debugState.bridgeType = 'Αποσυνδεδεμένο';
@@ -2205,6 +2234,14 @@ class ObdEngine {
       this.currentActiveCmd = cleanCmd;
       this.streamProcessor.reset();
 
+      if (Capacitor.getPlatform() === 'ios') {
+        const start = performance.now();
+        const { response } = await iosObd.command({ command: cleanCmd });
+        this.lastBridgeLatencyMs = performance.now() - start;
+        this.streamProcessor.feed(response, cleanCmd);
+        return response;
+      }
+
       // 1. Android Native Bridge (Bluetooth Classic RFCOMM SPP & TCP Socket)
       if (this.isNativeAndroid() && window.AndroidOBD) {
         const tBridge = performance.now();
@@ -2856,7 +2893,7 @@ class ObdEngine {
     const allPidsOrder = INITIAL_PID_CATALOG.map(i => i.pid);
     // Fast dashboard channels are refreshed every pass; slow-changing channels
     // are refreshed once every 4 passes. The ECU still receives one request at a time.
-    const fastPids = new Set(['010C', '0104', '010B', '010D', '010F', '0110', '0111', '0134']);
+    const fastPids = new Set(['0110', '0105', '010C', '010E']);
     let passNumber = 0;
 
     while (this.isPolling && (this.mode === 'bluetooth' || this.mode === 'wifi')) {
@@ -2868,10 +2905,10 @@ class ObdEngine {
       const cycleStart = performance.now();
       try {
         const supportedQueue = allPidsOrder.filter(pid => !this.unsupportedPids.has(pid));
-        const slowPass = (passNumber++ % 4) === 3;
+        const secondarySlot = passNumber++ % 4;
         const activeQueue = this.focusedSensorPid
           ? (this.unsupportedPids.has(this.focusedSensorPid) ? [] : [this.focusedSensorPid])
-          : supportedQueue.filter(pid => fastPids.has(pid) || slowPass);
+          : supportedQueue.filter(pid => fastPids.has(pid) || (allPidsOrder.filter(p => !fastPids.has(p)).indexOf(pid) % 4 === secondarySlot));
         // This metric describes the actual pass, not all supported channels.
         this.debugState.supportedSensorsCount = supportedQueue.length;
 
