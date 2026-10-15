@@ -2303,9 +2303,9 @@ class ObdEngine {
   }
 
   private startRealObdPolling(): void {
-    if (this.isPollingRunning) return;
     this.isPolling = true;
-    this.pollingLoop();
+    if (this.isPollingRunning) return;
+    void this.pollingLoop();
   }
 
   private stopRealObdPolling(): void {
