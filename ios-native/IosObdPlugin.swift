@@ -47,7 +47,7 @@ public class IosObdPlugin: CAPPlugin, CAPBridgedPlugin {
                     case .failed(let error):
                         finished = true; deadline.cancel()
                         self.closeSocket()
-                        call.reject("TCP connection failed: \\(error.localizedDescription)")
+                        call.reject("TCP connection failed: \(error.localizedDescription)")
                     case .cancelled:
                         finished = true; deadline.cancel()
                         call.reject("TCP connection cancelled")
@@ -78,7 +78,7 @@ public class IosObdPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             self.timeout = deadline
             self.queue.asyncAfter(deadline: .now() + 10, execute: deadline)
-            conn.send(content: Data((cmd + "\\r").utf8), completion: .contentProcessed { error in
+            conn.send(content: Data((cmd + "\r").utf8), completion: .contentProcessed { error in
                 if let error = error {
                     self.queue.async {
                         self.timeout?.cancel()
