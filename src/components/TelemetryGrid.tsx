@@ -4,9 +4,10 @@ import { TelemetryData } from '../types/telemetry';
 
 interface Props {
   telemetry: TelemetryData;
+  onSensorDoubleClick?: (pid: string) => void;
 }
 
-export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
+export const TelemetryGrid: React.FC<Props> = ({ telemetry, onSensorDoubleClick }) => {
   const {
     mafGramsPerSec,
     engineLoad,
@@ -27,7 +28,7 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       {/* 1. MAF (0110) & Engine Load (0104) */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm" onDoubleClick={() => onSensorDoubleClick?.('0110')} title="Διπλό πάτημα: γρήγορη καταγραφή αισθητήρα" style={{ touchAction: 'manipulation' }}>
         <div className="flex items-center justify-between text-slate-400">
           <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
             <Wind className="w-3.5 h-3.5 text-blue-400" />
@@ -60,7 +61,7 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
       </div>
 
       {/* 2. AFR, Wideband Lambda (0124/0134), Lambda Spec (0144) & O2 Voltage (0114/0115) */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm" onDoubleClick={() => onSensorDoubleClick?.('0134')} title="Διπλό πάτημα: γρήγορη καταγραφή αισθητήρα" style={{ touchAction: 'manipulation' }}>
         <div className="flex items-center justify-between text-slate-400">
           <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
             <Flame className="w-3.5 h-3.5 text-amber-400" />
@@ -100,7 +101,7 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
       </div>
 
       {/* 4. Ignition Timing (PID 010E) */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm" onDoubleClick={() => onSensorDoubleClick?.('010E')} title="Διπλό πάτημα: γρήγορη καταγραφή αισθητήρα" style={{ touchAction: 'manipulation' }}>
         <div className="flex items-center justify-between text-slate-400">
           <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
             <Compass className="w-3.5 h-3.5 text-purple-400" />
@@ -132,7 +133,7 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
       </div>
 
       {/* 5. Coolant temperature only */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between shadow-sm">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between shadow-sm" onDoubleClick={() => onSensorDoubleClick?.('0105')} title="Διπλό πάτημα: γρήγορη καταγραφή αισθητήρα" style={{ touchAction: 'manipulation' }}>
         <div className="flex items-center justify-between text-slate-400">
           <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
             <Thermometer className="w-3.5 h-3.5 text-red-400" /> Θερμοκρασία Ψυκτικού
@@ -148,7 +149,7 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
       </div>
 
       {/* 6. Intake Air Temp (PID 010F) */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm" onDoubleClick={() => onSensorDoubleClick?.('010F')} title="Διπλό πάτημα: γρήγορη καταγραφή αισθητήρα" style={{ touchAction: 'manipulation' }}>
         <div className="flex items-center justify-between text-slate-400">
           <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
             <Thermometer className="w-3.5 h-3.5 text-cyan-400" />
@@ -180,7 +181,7 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
       </div>
 
       {/* 7. Fuel Trims STFT (0106) & LTFT (0107) */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm" onDoubleClick={() => onSensorDoubleClick?.('0106')} title="Διπλό πάτημα: γρήγορη καταγραφή αισθητήρα" style={{ touchAction: 'manipulation' }}>
         <div className="flex items-center justify-between text-slate-400">
           <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
             <Activity className="w-3.5 h-3.5 text-emerald-400" />
@@ -224,7 +225,7 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
       </div>
 
       {/* 8. Voltage (ATRV) & Throttle (0111) */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm" onDoubleClick={() => onSensorDoubleClick?.('0111')} title="Διπλό πάτημα: γρήγορη καταγραφή αισθητήρα" style={{ touchAction: 'manipulation' }}>
         <div className="flex items-center justify-between text-slate-400">
           <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
             <Battery className="w-3.5 h-3.5 text-amber-300" />
