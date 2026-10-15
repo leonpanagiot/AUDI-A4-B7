@@ -500,6 +500,8 @@ class ObdEngine {
   // Polling & Mutex Lock
   private isPolling: boolean = false;
   private isPollingRunning: boolean = false;
+  private focusedSensorPid: string | null = null;
+  private speedSampleListeners = new Set<(speed: number, at: number) => void>();
   private commandMutex: Promise<any> = Promise.resolve();
   private logCounter: number = 1;
   private recentLatencies: number[] = [];
@@ -644,7 +646,9 @@ class ObdEngine {
         if (bytes.length >= 1) {
           const mapKpa = bytes[0];
           if (mapKpa > 10) {
-            const boostBar = Math.round(((mapKpa - 101.3) / 100) * 100) / 100;
+            const baroKpa = this.liveTelemetry.baroPressureKpa;
+            if (baroKpa === null || baroKpa === undefined) break;
+            const boostBar = Math.round(((mapKpa - baroKpa) / 100) * 100) / 100;
             this.liveTelemetry.boostBar = boostBar;
             this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
             if (this.peakBoost === null || boostBar > this.peakBoost) {
@@ -775,6 +779,8 @@ class ObdEngine {
         parsedValue: 'N/A',
         latencyMs: 0,
         bridgeLatencyMs: 0,
+        timeoutMs: (item.pid === '010C' || item.pid.startsWith('AT')) ? 6500 : 750,
+        retries: 0,
         refreshIntervalMs: 0,
         lastValidTimestampMs: 0,
         status: 'pending',
@@ -1887,6 +1893,18 @@ class ObdEngine {
    * Temporarily disabled per Requirement 2 to prevent destroying the 01-Engine ECU session.
    * Does NOT attempt any automatic change to another ECU.
    */
+  /**
+   * Explicit, isolated VAG engine address 01 capability test.
+   * Never run on the live polling connection without stopping and restoring it.
+   * A positive KWP session alone is not proof of Group 115/118 support.
+   */
+  public async testVagEngineGroups115118(): Promise<string> {
+    const msg = 'VAG Group Test προσωρινά απενεργοποιημένο: η δοκιμή ATSP5 διέκοψε την επικοινωνία με την ECU. Αποσυνδέστε και επανασυνδέστε το Vgate από τη θύρα OBD και χρησιμοποιήστε κανονική σύνδεση OBD-II. Δεν θα σταλούν εντολές αλλαγής πρωτοκόλλου.';
+    this.recordCommandLog('VAG TEST', msg, msg, 0, true);
+    this.notifyDebug();
+    return msg;
+  }
+
   public async probe17InstrumentsOilTempG266(): Promise<string> {
     const msg = 'Ο έλεγχος 17-Instruments (G266) είναι προσωρινά απενεργοποιημένος για την προστασία της συνεδρίας της Engine ECU (01-Engine ME7.5).';
     this.debugState.instruments17G266Status = msg;
@@ -2046,6 +2064,117 @@ class ObdEngine {
     this.recordCommandLog(clean, raw || 'EMPTY', 'Manual Terminal Command', latency, this.isNoData(raw));
     this.notifyDebug();
     return raw;
+  }
+
+  /**
+   * Read-only discovery of standard Mode 01 sensors on the existing ECU session.
+   * No protocol switching, ECU addressing, session control or write commands.
+   */
+  private decodeDiscoveredMode01(pid: string, raw: string): string | null {
+    const hex = pid.slice(2);
+    // Require a positive response for this exact PID; never decode an echo or a negative reply.
+    const normalized = raw.toUpperCase().replace(/[^0-9A-F]/g, '');
+    const marker = '41' + hex;
+    const start = normalized.indexOf(marker);
+    if (start < 0) return null;
+    const payload = normalized.slice(start + marker.length);
+    const bytes = (payload.match(/.{2}/g) || []).map(x => parseInt(x, 16));
+    const a = bytes[0], b = bytes[1];
+    const yesNo = (v: boolean) => v ? 'ΝΑΙ' : 'ΟΧΙ';
+    switch (pid) {
+      case '0101':
+        if (a === undefined) return null;
+        return `Check Engine: ${yesNo(!!(a & 0x80))} • DTCs: ${a & 0x7F} • Readiness: ${bytes.slice(1, 4).map(v => v.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`;
+      case '0103': {
+        if (a === undefined || b === undefined) return null;
+        const states: Record<number, string> = { 1: 'Open loop (θερμοκρασία)', 2: 'Closed loop (λ)', 4: 'Open loop (φορτίο/επιτάχυνση)', 8: 'Open loop (βλάβη)', 16: 'Closed loop (σφάλμα αισθητήρα)' };
+        return `Fuel System 1: ${states[a] || 'Κατάσταση ' + a} • System 2: ${b === 0 ? 'Μη διαθέσιμο' : states[b] || 'Κατάσταση ' + b}`;
+      }
+      case '0112': {
+        if (a === undefined) return null;
+        const states: Record<number, string> = {1:'Upstream (πριν τον καταλύτη)',2:'Downstream (μετά τον καταλύτη)',4:'Εξωτερική ατμόσφαιρα',8:'Ανενεργό'};
+        return 'Δευτερεύων αέρας: ' + (states[a] || 'Κατάσταση ' + a);
+      }
+      case '0113':
+        if (a === undefined) return null;
+        return 'Αισθητήρες O2: ' + Array.from({length:8},(_,i) => a & (1 << i) ? `B${Math.floor(i/4)+1}S${i%4+1}` : '').filter(Boolean).join(', ');
+      case '011C': {
+        if (a === undefined) return null;
+        const standards: Record<number,string> = {1:'OBD-II (CARB)',2:'OBD (Federal EPA)',3:'OBD + OBD-II',4:'OBD-I',5:'Not OBD compliant',6:'EOBD (Ευρωπαϊκό)',7:'EOBD + OBD-II',8:'EOBD + OBD',9:'EOBD + OBD + OBD-II',10:'JOBD',11:'JOBD + OBD-II',12:'JOBD + EOBD',13:'JOBD + EOBD + OBD-II'};
+        return `Πρότυπο διάγνωσης: ${standards[a] || 'Κωδικός ' + a}`;
+      }
+      case '0121':
+        if (a === undefined || b === undefined) return null;
+        return `Απόσταση με Check Engine: ${a * 256 + b} km`;
+      default: return null;
+    }
+  }
+
+  public async scanAllSensors(): Promise<string> {
+    if (this.mode === 'disconnected' || !this.debugState.ecuLocked) {
+      return 'Απαιτείται ενεργή και επιβεβαιωμένη σύνδεση ECU.';
+    }
+    const wasPolling = this.isPolling;
+    this.stopRealObdPolling();
+    for (let i = 0; i < 100 && this.isPollingRunning; i++) await this.sleep(100);
+    if (this.isPollingRunning) return 'Το polling δεν σταμάτησε. Το scan ακυρώθηκε.';
+    const found: string[] = [];
+    let checked = 0;
+    try {
+      // Mode 01 support bitmasks: 00,20,...,C0. Probe only advertised PIDs.
+      for (let base = 0; base <= 0xC0; base += 0x20) {
+        const maskPid = '01' + base.toString(16).toUpperCase().padStart(2, '0');
+        const raw = await this.sendObdCommand(maskPid);
+        this.recordCommandLog('SCAN ' + maskPid, raw, 'Supported PID bitmap', 0, this.isNoData(raw));
+        const normalized = raw.toUpperCase().replace(/[^0-9A-F]/g, '');
+        const prefix = '41' + base.toString(16).toUpperCase().padStart(2, '0');
+        const pos = normalized.indexOf(prefix);
+        if (pos < 0 || normalized.length < pos + 12) break;
+        const mask = normalized.slice(pos + 4, pos + 12);
+        if (!/^[0-9A-F]{8}$/.test(mask)) break;
+        for (let offset = 1; offset <= 32; offset++) {
+          const byte = parseInt(mask.slice(Math.floor((offset - 1) / 8) * 2, Math.floor((offset - 1) / 8) * 2 + 2), 16);
+          if (!(byte & (0x80 >> ((offset - 1) % 8)))) continue;
+          const pidNumber = base + offset;
+          if (pidNumber % 0x20 === 0 || pidNumber > 0xDF) continue;
+          const pid = '01' + pidNumber.toString(16).toUpperCase().padStart(2, '0');
+          checked++;
+          const response = await this.sendObdCommand(pid);
+          const compact = response.toUpperCase().replace(/[^0-9A-F]/g, '');
+          const valid = compact.includes('41' + pid.slice(2)) && !/7F01(?:11|12|31)/.test(compact);
+          const decoded = valid ? this.decodeDiscoveredMode01(pid, response) : null;
+          this.recordCommandLog('SCAN ' + pid, response, valid ? 'SUPPORTED' : 'NO VALID DATA', 0, !valid);
+          if (valid) {
+            found.push(pid);
+            if (!this.debugState.pidTable[pid]) {
+              this.debugState.pidTable[pid] = {
+                pid, name: ({'0101':'MIL / DTC / Readiness','0103':'Κατάσταση συστήματος καυσίμου','0112':'Δευτερεύων αέρας','0113':'Αισθητήρες οξυγόνου','011C':'Πρότυπο OBD','0121':'Απόσταση με MIL'} as Record<string,string>)[pid] || 'OBD-II PID ' + pid, rawResponse: response,
+                parsedValue: decoded || 'Raw hex (δεν υπάρχει decoder)', latencyMs: 0, bridgeLatencyMs: 0,
+                timeoutMs: 750, retries: 0, refreshIntervalMs: 0,
+                lastValidTimestampMs: Date.now(), status: 'ok',
+                successCount: 1, failCount: 0, lastUpdated: new Date().toLocaleTimeString('el-GR')
+              };
+            } else if (decoded) {
+              const entry = this.debugState.pidTable[pid];
+              entry.parsedValue = decoded;
+              entry.rawResponse = response;
+              entry.status = 'ok';
+            }
+          }
+          this.notifyDebug();
+        }
+        if (!(parseInt(mask.slice(6, 8), 16) & 1)) break;
+      }
+    } catch (e: any) {
+      this.recordCommandLog('SCAN ERROR', String(e?.message || e), 'Scan stopped', 0, true);
+    } finally {
+      if (wasPolling && this.debugState.ecuLocked) this.startRealObdPolling();
+      this.notifyDebug();
+    }
+    const summary = `Scan All Sensors: ${found.length}/${checked} απάντησαν. PIDs: ${found.join(', ') || 'κανένα'}`;
+    this.recordCommandLog('SCAN RESULT', summary, summary, 0, false);
+    this.notifyDebug();
+    return summary;
   }
 
   public async runFullSensorDiagnosticSweep(): Promise<void> {
@@ -2216,7 +2345,7 @@ class ObdEngine {
     entry.lastUpdated = nowStr;
 
     const upperRaw = (raw || '').toUpperCase();
-    if (upperRaw.includes('BUS INIT: ERROR') || upperRaw.includes('UNABLE TO CONNECT') || upperRaw.includes('CAN ERROR') || upperRaw.includes('STOPPED')) {
+    if (upperRaw.includes('BUS INIT: ERROR') || upperRaw.includes('UNABLE TO CONNECT') || upperRaw.includes('CAN ERROR')) {
       entry.status = 'error';
       entry.parsedValue = 'BUS INIT ERROR';
       entry.failCount++;
@@ -2225,6 +2354,22 @@ class ObdEngine {
       this.stopRealObdPolling();
       this.recordCommandLog(pid, raw, 'BUS INIT ERROR (Χάθηκε η σύνδεση ECU)', latency, true);
       this.notifyStatus('Χάθηκε η σύνδεση με την Engine ECU (BUS INIT: ERROR). Απαιτείται καθαρή επανασύνδεση.', this.mode);
+      this.debugState.pidTable[pid] = entry;
+      return null;
+    }
+
+    // KWP/OBD negative response: 7F 01 12 = service/subfunction unsupported.
+    // Unlike a transient timeout, retrying this every cycle wastes ~230 ms.
+    const normalizedHex = upperRaw.replace(/[^0-9A-F]/g, '');
+    const negativeMode01 = /7F0112|7F0111/.test(normalizedHex);
+    if (pid.startsWith('01') && negativeMode01) {
+      entry.status = 'no_data';
+      entry.parsedValue = 'N/A (ECU: 7F 01 12/11, μη υποστηριζόμενο)';
+      entry.failCount++;
+      this.debugState.totalErrors++;
+      this.unsupportedPids.add(pid);
+      this.updateSupportedSensorCount();
+      this.recordCommandLog(pid, raw, 'UNSUPPORTED BY ECU - removed from live polling', latency, false);
       this.debugState.pidTable[pid] = entry;
       return null;
     }
@@ -2303,9 +2448,9 @@ class ObdEngine {
   }
 
   private startRealObdPolling(): void {
-    if (this.isPollingRunning) return;
     this.isPolling = true;
-    this.pollingLoop();
+    if (this.isPollingRunning) return;
+    void this.pollingLoop();
   }
 
   private stopRealObdPolling(): void {
@@ -2316,7 +2461,38 @@ class ObdEngine {
    * Immediately pushes the updated real telemetry to the UI after each valid sensor response.
    * Strictly NO fabricated/calculated values!
    */
+  /**
+   * Estimated manifold gauge pressure from MAF, RPM and intake temperature.
+   * 1.8 L four-stroke engine, assumed VE=0.85 and standard atmospheric pressure
+   * when PID 0133 is unavailable. This is NOT ECU-measured turbo pressure.
+   */
+  private updateCalculatedBoost(): void {
+    const { rpm, mafGramsPerSec: maf, iat } = this.liveTelemetry;
+    if (rpm === null || rpm < 450 || maf === null || maf <= 0 || iat === null) {
+      this.liveTelemetry.boostBar = null;
+      this.liveTelemetry.boostPsi = null;
+      return;
+    }
+    const kelvin = iat + 273.15;
+    const ve = 0.85; // Assumed volumetric efficiency; approximate only
+    const manifoldKpa = (maf * 0.001 * 120 * 287.05 * kelvin) / (rpm * 0.0018 * ve * 1000);
+    const atmosphereKpa = this.liveTelemetry.baroPressureKpa ?? 101.325;
+    const boostBar = (manifoldKpa - atmosphereKpa) / 100;
+    if (!Number.isFinite(boostBar) || boostBar < -1.1 || boostBar > 3) {
+      this.liveTelemetry.boostBar = null;
+      this.liveTelemetry.boostPsi = null;
+      return;
+    }
+    this.liveTelemetry.boostBar = Math.round(boostBar * 100) / 100;
+    this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
+    if (this.peakBoost === null || boostBar > this.peakBoost) {
+      this.peakBoost = boostBar;
+      this.liveTelemetry.peakBoostBar = Math.round(boostBar * 100) / 100;
+    }
+  }
+
   private pushLiveTelemetryUpdate(): void {
+    this.updateCalculatedBoost();
     this.liveTelemetry.timestamp = Date.now();
     this.notifyTelemetry({ ...this.liveTelemetry });
   }
@@ -2394,7 +2570,11 @@ class ObdEngine {
         await this.executeTrackedPid('010B', 'Intake Manifold Absolute Pressure (MAP kPa)', (raw) => {
           const val = this.parseMap(raw);
           if (val !== null && val >= 10) {
-            const baroKpa = this.liveTelemetry.baroPressureKpa ?? 101.3;
+            const baroKpa = this.liveTelemetry.baroPressureKpa;
+            if (baroKpa === null || baroKpa === undefined) {
+              updated = true;
+              return `${val} kPa MAP (relative boost N/A: PID 0133 unavailable)`;
+            }
             const boostBar = Math.round(((val - baroKpa) / 100) * 100) / 100;
             this.liveTelemetry.boostBar = boostBar;
             this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
@@ -2414,6 +2594,7 @@ class ObdEngine {
           const val = this.parseSpeed(raw);
           if (val !== null) {
             this.liveTelemetry.speed = val;
+            this.speedSampleListeners.forEach(callback => callback(val, performance.now()));
             updated = true;
             return `${val} km/h`;
           }
@@ -2656,11 +2837,27 @@ class ObdEngine {
    * - Sequentially queries all supported sensors without priority starvation
    * - Automatically skips unsupported PIDs to maximize loop throughput
    */
+  public subscribeSpeedSamples(callback: (speed: number, at: number) => void): () => void {
+    this.speedSampleListeners.add(callback);
+    return () => { this.speedSampleListeners.delete(callback); };
+  }
+
+  public setFocusedSensor(pid: string | null): void {
+    // Only standard, already-known Mode 01 sensors; never switch ECU protocol.
+    const allowed = new Set(['010C','0104','0105','0106','0107','010D','010E','010F','0110','0111','0115','0134']);
+    this.focusedSensorPid = pid && allowed.has(pid) ? pid : null;
+    this.notifyDebug();
+  }
+
   public async pollingLoop(): Promise<void> {
     if (this.isPollingRunning) return;
     this.isPollingRunning = true;
 
     const allPidsOrder = INITIAL_PID_CATALOG.map(i => i.pid);
+    // Fast dashboard channels are refreshed every pass; slow-changing channels
+    // are refreshed once every 4 passes. The ECU still receives one request at a time.
+    const fastPids = new Set(['010C', '0104', '010B', '010D', '010F', '0110', '0111', '0134']);
+    let passNumber = 0;
 
     while (this.isPolling && (this.mode === 'bluetooth' || this.mode === 'wifi')) {
       if (!this.debugState.ecuLocked) {
@@ -2671,9 +2868,14 @@ class ObdEngine {
       const cycleStart = performance.now();
       try {
         const supportedQueue = allPidsOrder.filter(pid => !this.unsupportedPids.has(pid));
+        const slowPass = (passNumber++ % 4) === 3;
+        const activeQueue = this.focusedSensorPid
+          ? (this.unsupportedPids.has(this.focusedSensorPid) ? [] : [this.focusedSensorPid])
+          : supportedQueue.filter(pid => fastPids.has(pid) || slowPass);
+        // This metric describes the actual pass, not all supported channels.
         this.debugState.supportedSensorsCount = supportedQueue.length;
 
-        for (const pid of supportedQueue) {
+        for (const pid of activeQueue) {
           if (!this.isPolling || !this.debugState.ecuLocked || (this.mode !== 'bluetooth' && this.mode !== 'wifi')) break;
           await this.pollSinglePidIfSupported(pid);
         }
@@ -2717,6 +2919,7 @@ class ObdEngine {
     if (this.isNoData(upper) && !upper.includes('41')) return null;
 
     const cleanHex = upper.replace(/[^0-9A-F]/g, '');
+    if (cleanHex.includes('7F0112') || cleanHex.includes('7F0111')) return null;
     const header = '41' + pidHex.toUpperCase();
     const idx = cleanHex.indexOf(header);
     if (idx === -1) return null;
@@ -3010,10 +3213,12 @@ class ObdEngine {
       if (load !== null) this.liveTelemetry.engineLoad = load;
       if (specMbar !== null && specMbar > 100) {
         this.liveTelemetry.boostSpecifiedMbar = Math.round(specMbar);
-        this.liveTelemetry.boostSpecifiedBar = Math.round(((specMbar - 1013) / 1000) * 100) / 100;
       }
-      if (actMbar !== null && actMbar > 100) {
-        const boostBar = Math.round(((actMbar - 1013) / 1000) * 100) / 100;
+      if (specMbar !== null && specMbar > 100 && this.liveTelemetry.baroPressureKpa != null) {
+        this.liveTelemetry.boostSpecifiedBar = Math.round(((specMbar - this.liveTelemetry.baroPressureKpa * 10) / 1000) * 100) / 100;
+      }
+      if (actMbar !== null && actMbar > 100 && this.liveTelemetry.baroPressureKpa != null) {
+        const boostBar = Math.round(((actMbar - this.liveTelemetry.baroPressureKpa * 10) / 1000) * 100) / 100;
         this.liveTelemetry.boostBar = boostBar;
         this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
         if (this.peakBoost === null || boostBar > this.peakBoost) {
@@ -3031,8 +3236,8 @@ class ObdEngine {
       const actMbar = numVal(cells[3]);
       if (iat !== null) this.liveTelemetry.iat = Math.round(iat);
       if (n75 !== null) this.liveTelemetry.n75DutyCycle = Math.round(n75 * 10) / 10;
-      if (actMbar !== null && actMbar > 100) {
-        const boostBar = Math.round(((actMbar - 1013) / 1000) * 100) / 100;
+      if (actMbar !== null && actMbar > 100 && this.liveTelemetry.baroPressureKpa != null) {
+        const boostBar = Math.round(((actMbar - this.liveTelemetry.baroPressureKpa * 10) / 1000) * 100) / 100;
         this.liveTelemetry.boostBar = boostBar;
         this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
       }

@@ -21,8 +21,12 @@ export const ObdDebugPanel: React.FC = () => {
   const [debug, setDebug] = useState<ObdDebugState>(obdEngine.getDebugState());
   const [customCmd, setCustomCmd] = useState('');
   const [isRunningSweep, setIsRunningSweep] = useState(false);
+  const [isScanningAll, setIsScanningAll] = useState(false);
+  const [scanResult, setScanResult] = useState('');
   const [isForcingProto, setIsForcingProto] = useState<string | null>(null);
   const [isProbingG266, setIsProbingG266] = useState(false);
+  const [isTestingVag, setIsTestingVag] = useState(false);
+  const [vagTestResult, setVagTestResult] = useState('');
   const [copiedReport, setCopiedReport] = useState(false);
   const [testingPid, setTestingPid] = useState<string | null>(null);
 
@@ -61,12 +65,32 @@ export const ObdDebugPanel: React.FC = () => {
     }
   };
 
+  const handleScanAll = async () => {
+    setIsScanningAll(true);
+    setScanResult('');
+    try {
+      setScanResult(await obdEngine.scanAllSensors());
+    } finally {
+      setIsScanningAll(false);
+    }
+  };
+
   const handleProbeG266 = async () => {
     setIsProbingG266(true);
     try {
       await obdEngine.probe17InstrumentsOilTempG266();
     } finally {
       setIsProbingG266(false);
+    }
+  };
+
+  const handleVagTest = async () => {
+    setIsTestingVag(true);
+    setVagTestResult('');
+    try {
+      setVagTestResult(await obdEngine.testVagEngineGroups115118());
+    } finally {
+      setIsTestingVag(false);
     }
   };
 
@@ -125,7 +149,9 @@ ${recentLogs}
     });
   };
 
-  const pidEntries = Object.values(debug.pidTable) as PidDebugEntry[];
+  const pidEntries = (Object.values(debug.pidTable) as PidDebugEntry[])
+    .filter(row => row.status !== 'no_data' && row.parsedValue !== 'N/A' && !row.parsedValue.startsWith('N/A ('));
+
 
   return (
     <div className="space-y-5">
@@ -149,6 +175,12 @@ ${recentLogs}
           </div>
 
           <div className="flex items-center flex-wrap gap-2">
+            <button onClick={handleScanAll}
+              disabled={isScanningAll || isRunningSweep || isTestingVag}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 text-white text-xs font-bold uppercase">
+              <RefreshCw className={`w-4 h-4 ${isScanningAll ? 'animate-spin' : ''}`} />
+              {isScanningAll ? 'Scanning...' : 'Scan All Sensors'}
+            </button>
             <button
               onClick={handleRunSweep}
               disabled={isRunningSweep || isProbingG266}
@@ -168,6 +200,14 @@ ${recentLogs}
             </button>
 
             <button
+              onClick={handleVagTest}
+              disabled={isTestingVag || isProbingG266 || isRunningSweep}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-violet-700 hover:bg-violet-600 disabled:opacity-50 text-white text-xs font-bold uppercase"
+            >
+              <Radio className={`w-4 h-4 ${isTestingVag ? 'animate-pulse' : ''}`} />
+              <span>{isTestingVag ? 'Έλεγχος VAG σε εξέλιξη...' : 'VAG Group Connection Test (115/118)'}</span>
+            </button>
+            <button
               onClick={handleCopyDebugReport}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-md"
             >
@@ -176,6 +216,13 @@ ${recentLogs}
             </button>
           </div>
         </div>
+
+        {scanResult && <div className="mt-3 text-xs text-cyan-300 font-mono break-words">{scanResult}</div>}
+        {vagTestResult && (
+          <div className="mt-3 rounded-xl border border-violet-500/40 bg-violet-950/30 p-3 text-sm text-violet-100 whitespace-pre-wrap">
+            {vagTestResult}
+          </div>
+        )}
 
         {/* Connection & ECU Diagnostic Metadata Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-4">
@@ -303,7 +350,7 @@ ${recentLogs}
             Ζωντανός Πίνακας Αισθητήρων OBD-II (Πραγματικοί Χρόνοι Απόκρισης &amp; Refresh Interval)
           </h3>
           <span className="text-[11px] font-mono text-slate-400">
-            Μη υποστηριζόμενα PIDs εμφανίζουν αυστηρά N/A και αφαιρούνται από τον κύκλο
+            Τα μη υποστηριζόμενα PIDs (N/A) αποκρύπτονται από τον πίνακα, αλλά παραμένουν στην αναφορά Debug
           </span>
         </div>
 

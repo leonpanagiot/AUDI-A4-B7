@@ -17,6 +17,7 @@ import { TelemetryData, DTCFault } from './types/telemetry';
 import { AnalogBoostGauge } from './components/AnalogBoostGauge';
 import { RpmRevCounter } from './components/RpmRevCounter';
 import { TelemetryGrid } from './components/TelemetryGrid';
+import { FocusedSensorGraph } from './components/FocusedSensorGraph';
 import { ThrottleSimulatorControl } from './components/ThrottleSimulatorControl';
 import { VagMeasuringBlocks } from './components/VagMeasuringBlocks';
 import { HudDisplay } from './components/HudDisplay';
@@ -29,6 +30,7 @@ export default function App() {
   const [isEcuLocked, setIsEcuLocked] = useState<boolean>(() => obdEngine.getDebugState().ecuLocked);
   const [activeTab, setActiveTab] = useState<'connect' | 'cockpit' | 'debug' | 'vagblocks' | 'dtc' | 'timer' | 'logger'>('connect');
   const [isHudOpen, setIsHudOpen] = useState(false);
+  const [focusedPid, setFocusedPid] = useState<string | null>(null);
 
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     ...ZERO_TELEMETRY,
@@ -302,10 +304,10 @@ export default function App() {
                 ? 'bg-red-600 text-white shadow-md shadow-red-600/30 cursor-pointer'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/60 cursor-pointer'
             }`}
-            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'Χρονόμετρο 0-100'}
+            title={!isEcuLocked ? 'Απαιτείται επιβεβαιωμένη σύνδεση ECU' : 'Draggy'}
           >
             {!isEcuLocked ? <Lock className="w-3.5 h-3.5" /> : <Timer className="w-3.5 h-3.5" />}
-            <span>0-100 km/h</span>
+            <span>Draggy</span>
           </button>
 
           {/* Debug Console tab (Always accessible before and after connection) */}
@@ -370,6 +372,7 @@ export default function App() {
         {/* Tab 1: Cockpit / Telemetry (Active only once ECU is confirmed locked) */}
         {activeTab === 'cockpit' && isEcuLocked && (
           <div className="space-y-5">
+            {focusedPid ? <FocusedSensorGraph pid={focusedPid} onClose={() => setFocusedPid(null)} /> : <>
             {/* OBD-II Connection Control Bar */}
             <ThrottleSimulatorControl
               mode={connectionMode}
@@ -384,7 +387,7 @@ export default function App() {
                 <div className="flex items-center gap-2 mb-2">
                   <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
                   <h3 className="text-xs font-bold text-slate-300 uppercase tracking-widest font-mono">
-                    ΜΠΑΡΟΜΕΤΡΟ (TURBO BOOST)
+                    CALCULATED BOOST (ΕΚΤΙΜΗΣΗ)
                   </h3>
                 </div>
                 <AnalogBoostGauge
@@ -411,7 +414,8 @@ export default function App() {
             </div>
 
             {/* Telemetry Matrix Grid */}
-            <TelemetryGrid telemetry={telemetry} />
+            <TelemetryGrid telemetry={telemetry} onSensorDoubleClick={setFocusedPid} />
+            </>}
           </div>
         )}
 
