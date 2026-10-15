@@ -500,6 +500,7 @@ class ObdEngine {
   // Polling & Mutex Lock
   private isPolling: boolean = false;
   private isPollingRunning: boolean = false;
+  private focusedSensorPid: string | null = null;
   private commandMutex: Promise<any> = Promise.resolve();
   private logCounter: number = 1;
   private recentLatencies: number[] = [];
@@ -2788,6 +2789,13 @@ class ObdEngine {
    * - Sequentially queries all supported sensors without priority starvation
    * - Automatically skips unsupported PIDs to maximize loop throughput
    */
+  public setFocusedSensor(pid: string | null): void {
+    // Only standard, already-known Mode 01 sensors; never switch ECU protocol.
+    const allowed = new Set(['010C','0104','0105','0106','0107','010D','010E','010F','0110','0111','0115','0134']);
+    this.focusedSensorPid = pid && allowed.has(pid) ? pid : null;
+    this.notifyDebug();
+  }
+
   public async pollingLoop(): Promise<void> {
     if (this.isPollingRunning) return;
     this.isPollingRunning = true;
@@ -2808,9 +2816,11 @@ class ObdEngine {
       try {
         const supportedQueue = allPidsOrder.filter(pid => !this.unsupportedPids.has(pid));
         const slowPass = (passNumber++ % 4) === 3;
-        const activeQueue = supportedQueue.filter(pid => fastPids.has(pid) || slowPass);
+        const activeQueue = this.focusedSensorPid
+          ? (this.unsupportedPids.has(this.focusedSensorPid) ? [] : [this.focusedSensorPid])
+          : supportedQueue.filter(pid => fastPids.has(pid) || slowPass);
         // This metric describes the actual pass, not all supported channels.
-        this.debugState.supportedSensorsCount = activeQueue.length;
+        this.debugState.supportedSensorsCount = supportedQueue.length;
 
         for (const pid of activeQueue) {
           if (!this.isPolling || !this.debugState.ecuLocked || (this.mode !== 'bluetooth' && this.mode !== 'wifi')) break;
