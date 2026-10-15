@@ -17,6 +17,7 @@ import { TelemetryData, DTCFault } from './types/telemetry';
 import { AnalogBoostGauge } from './components/AnalogBoostGauge';
 import { RpmRevCounter } from './components/RpmRevCounter';
 import { TelemetryGrid } from './components/TelemetryGrid';
+import { FocusedSensorGraph } from './components/FocusedSensorGraph';
 import { ThrottleSimulatorControl } from './components/ThrottleSimulatorControl';
 import { VagMeasuringBlocks } from './components/VagMeasuringBlocks';
 import { HudDisplay } from './components/HudDisplay';
@@ -29,6 +30,7 @@ export default function App() {
   const [isEcuLocked, setIsEcuLocked] = useState<boolean>(() => obdEngine.getDebugState().ecuLocked);
   const [activeTab, setActiveTab] = useState<'connect' | 'cockpit' | 'debug' | 'vagblocks' | 'dtc' | 'timer' | 'logger'>('connect');
   const [isHudOpen, setIsHudOpen] = useState(false);
+  const [focusedPid, setFocusedPid] = useState<string | null>(null);
 
   const [telemetry, setTelemetry] = useState<TelemetryData>({
     ...ZERO_TELEMETRY,
@@ -370,6 +372,7 @@ export default function App() {
         {/* Tab 1: Cockpit / Telemetry (Active only once ECU is confirmed locked) */}
         {activeTab === 'cockpit' && isEcuLocked && (
           <div className="space-y-5">
+            {focusedPid ? <FocusedSensorGraph pid={focusedPid} onClose={() => setFocusedPid(null)} /> : <>
             {/* OBD-II Connection Control Bar */}
             <ThrottleSimulatorControl
               mode={connectionMode}
@@ -411,7 +414,8 @@ export default function App() {
             </div>
 
             {/* Telemetry Matrix Grid */}
-            <TelemetryGrid telemetry={telemetry} />
+            <TelemetryGrid telemetry={telemetry} onSensorDoubleClick={setFocusedPid} />
+            </>}
           </div>
         )}
 
