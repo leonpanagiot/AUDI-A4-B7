@@ -43,12 +43,25 @@ jobs:
           s=p.read_text().replace('</dict>', '<key>NSLocalNetworkUsageDescription</key><string>Σύνδεση με WiFi OBD2 για δεδομένα ECU.</string></dict>')
           p.write_text(s)
           PY
+      - name: Register Swift bridge in Xcode target
+        run: |
+          ruby - <<'RUBY'
+          require 'xcodeproj'
+          project = Xcodeproj::Project.open('ios/App/App.xcodeproj')
+          target = project.targets.find { |t| t.name == 'App' }
+          abort 'App target missing' unless target
+          group = project.main_group.find_subpath('App/App', true)
+          %w[IosObdPlugin.swift AudiBridgeViewController.swift].each do |filename|
+            ref = group.files.find { |file| file.path == filename } || group.new_file(filename)
+            target.source_build_phase.add_file_reference(ref) unless target.source_build_phase.files_references.include?(ref)
+          end
+          project.save
+          RUBY
       - name: Sync iOS
         run: npx cap sync ios
-      - name: iOS project generation status
+      - name: Compile iOS simulator (unsigned)
         run: |
-          echo 'iOS project generated. Swift plugin files must be registered with the Xcode target before compiling.'
-          ls ios/App/App/
+          xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
       - uses: actions/upload-artifact@v4
         with:
           name: audi-live-ios-project
