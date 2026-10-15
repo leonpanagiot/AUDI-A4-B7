@@ -2108,7 +2108,7 @@ class ObdEngine {
                 pid, name: 'Discovered Mode 01 PID ' + pid, rawResponse: response,
                 parsedValue: 'Raw hex (not decoded)', latencyMs: 0, bridgeLatencyMs: 0,
                 timeoutMs: 750, retries: 0, refreshIntervalMs: 0,
-                lastValidTimestampMs: Date.now(), status: 'success',
+                lastValidTimestampMs: Date.now(), status: 'ok',
                 successCount: 1, failCount: 0, lastUpdated: new Date().toLocaleTimeString('el-GR')
               };
             }
