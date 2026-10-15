@@ -2394,7 +2394,10 @@ class ObdEngine {
         await this.executeTrackedPid('010B', 'Intake Manifold Absolute Pressure (MAP kPa)', (raw) => {
           const val = this.parseMap(raw);
           if (val !== null && val >= 10) {
-            const baroKpa = this.liveTelemetry.baroPressureKpa ?? 101.3;
+            const baroKpa = this.liveTelemetry.baroPressureKpa;
+            if (baroKpa === null || baroKpa === undefined) {
+              return `${val} kPa MAP (relative boost N/A: PID 0133 unavailable)`;
+            }
             const boostBar = Math.round(((val - baroKpa) / 100) * 100) / 100;
             this.liveTelemetry.boostBar = boostBar;
             this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
