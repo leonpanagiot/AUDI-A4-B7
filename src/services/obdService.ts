@@ -2069,6 +2069,46 @@ class ObdEngine {
    * Read-only discovery of standard Mode 01 sensors on the existing ECU session.
    * No protocol switching, ECU addressing, session control or write commands.
    */
+  private decodeDiscoveredMode01(pid: string, raw: string): string | null {
+    const hex = pid.slice(2);
+    // Require a positive response for this exact PID; never decode an echo or a negative reply.
+    const normalized = raw.toUpperCase().replace(/[^0-9A-F]/g, '');
+    const marker = '41' + hex;
+    const start = normalized.indexOf(marker);
+    if (start < 0) return null;
+    const payload = normalized.slice(start + marker.length);
+    const bytes = (payload.match(/.{2}/g) || []).map(x => parseInt(x, 16));
+    const a = bytes[0], b = bytes[1];
+    const yesNo = (v: boolean) => v ? 'ΝΑΙ' : 'ΟΧΙ';
+    switch (pid) {
+      case '0101':
+        if (a === undefined) return null;
+        return `Check Engine: ${yesNo(!!(a & 0x80))} • DTCs: ${a & 0x7F} • Readiness: ${bytes.slice(1, 4).map(v => v.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`;
+      case '0103': {
+        if (a === undefined || b === undefined) return null;
+        const states: Record<number, string> = { 1: 'Open loop (θερμοκρασία)', 2: 'Closed loop (λ)', 4: 'Open loop (φορτίο/επιτάχυνση)', 8: 'Open loop (βλάβη)', 16: 'Closed loop (σφάλμα αισθητήρα)' };
+        return `Fuel System 1: ${states[a] || 'Κατάσταση ' + a} • System 2: ${b === 0 ? 'Μη διαθέσιμο' : states[b] || 'Κατάσταση ' + b}`;
+      }
+      case '0112': {
+        if (a === undefined) return null;
+        const states: Record<number, string> = {1:'Upstream (πριν τον καταλύτη)',2:'Downstream (μετά τον καταλύτη)',4:'Εξωτερική ατμόσφαιρα',8:'Ανενεργό'};
+        return 'Δευτερεύων αέρας: ' + (states[a] || 'Κατάσταση ' + a);
+      }
+      case '0113':
+        if (a === undefined) return null;
+        return 'Αισθητήρες O2: ' + Array.from({length:8},(_,i) => a & (1 << i) ? `B${Math.floor(i/4)+1}S${i%4+1}` : '').filter(Boolean).join(', ');
+      case '011C': {
+        if (a === undefined) return null;
+        const standards: Record<number,string> = {1:'OBD-II (CARB)',2:'OBD (Federal EPA)',3:'OBD + OBD-II',4:'OBD-I',5:'Not OBD compliant',6:'EOBD (Ευρωπαϊκό)',7:'EOBD + OBD-II',8:'EOBD + OBD',9:'EOBD + OBD + OBD-II',10:'JOBD',11:'JOBD + OBD-II',12:'JOBD + EOBD',13:'JOBD + EOBD + OBD-II'};
+        return `Πρότυπο διάγνωσης: ${standards[a] || 'Κωδικός ' + a}`;
+      }
+      case '0121':
+        if (a === undefined || b === undefined) return null;
+        return `Απόσταση με Check Engine: ${a * 256 + b} km`;
+      default: return null;
+    }
+  }
+
   public async scanAllSensors(): Promise<string> {
     if (this.mode === 'disconnected' || !this.debugState.ecuLocked) {
       return 'Απαιτείται ενεργή και επιβεβαιωμένη σύνδεση ECU.';
@@ -2101,17 +2141,23 @@ class ObdEngine {
           const response = await this.sendObdCommand(pid);
           const compact = response.toUpperCase().replace(/[^0-9A-F]/g, '');
           const valid = compact.includes('41' + pid.slice(2)) && !/7F01(?:11|12|31)/.test(compact);
+          const decoded = valid ? this.decodeDiscoveredMode01(pid, response) : null;
           this.recordCommandLog('SCAN ' + pid, response, valid ? 'SUPPORTED' : 'NO VALID DATA', 0, !valid);
           if (valid) {
             found.push(pid);
             if (!this.debugState.pidTable[pid]) {
               this.debugState.pidTable[pid] = {
-                pid, name: 'Discovered Mode 01 PID ' + pid, rawResponse: response,
-                parsedValue: 'Raw hex (not decoded)', latencyMs: 0, bridgeLatencyMs: 0,
+                pid, name: ({'0101':'MIL / DTC / Readiness','0103':'Κατάσταση συστήματος καυσίμου','0112':'Δευτερεύων αέρας','0113':'Αισθητήρες οξυγόνου','011C':'Πρότυπο OBD','0121':'Απόσταση με MIL'} as Record<string,string>)[pid] || 'OBD-II PID ' + pid, rawResponse: response,
+                parsedValue: decoded || 'Raw hex (δεν υπάρχει decoder)', latencyMs: 0, bridgeLatencyMs: 0,
                 timeoutMs: 750, retries: 0, refreshIntervalMs: 0,
                 lastValidTimestampMs: Date.now(), status: 'ok',
                 successCount: 1, failCount: 0, lastUpdated: new Date().toLocaleTimeString('el-GR')
               };
+            } else if (decoded) {
+              const entry = this.debugState.pidTable[pid];
+              entry.parsedValue = decoded;
+              entry.rawResponse = response;
+              entry.status = 'ok';
             }
           }
           this.notifyDebug();
