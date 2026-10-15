@@ -644,7 +644,9 @@ class ObdEngine {
         if (bytes.length >= 1) {
           const mapKpa = bytes[0];
           if (mapKpa > 10) {
-            const boostBar = Math.round(((mapKpa - 101.3) / 100) * 100) / 100;
+            const baroKpa = this.liveTelemetry.baroPressureKpa;
+            if (baroKpa === null || baroKpa === undefined) break;
+            const boostBar = Math.round(((mapKpa - baroKpa) / 100) * 100) / 100;
             this.liveTelemetry.boostBar = boostBar;
             this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
             if (this.peakBoost === null || boostBar > this.peakBoost) {
@@ -3013,10 +3015,10 @@ class ObdEngine {
       if (load !== null) this.liveTelemetry.engineLoad = load;
       if (specMbar !== null && specMbar > 100) {
         this.liveTelemetry.boostSpecifiedMbar = Math.round(specMbar);
-        this.liveTelemetry.boostSpecifiedBar = Math.round(((specMbar - 1013) / 1000) * 100) / 100;
+        this.liveTelemetry.boostSpecifiedBar = Math.round(((specMbar - (this.liveTelemetry.baroPressureKpa ?? 101.3) * 10) / 1000) * 100) / 100;
       }
       if (actMbar !== null && actMbar > 100) {
-        const boostBar = Math.round(((actMbar - 1013) / 1000) * 100) / 100;
+        const boostBar = Math.round(((actMbar - (this.liveTelemetry.baroPressureKpa ?? 101.3) * 10) / 1000) * 100) / 100;
         this.liveTelemetry.boostBar = boostBar;
         this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
         if (this.peakBoost === null || boostBar > this.peakBoost) {
@@ -3035,7 +3037,7 @@ class ObdEngine {
       if (iat !== null) this.liveTelemetry.iat = Math.round(iat);
       if (n75 !== null) this.liveTelemetry.n75DutyCycle = Math.round(n75 * 10) / 10;
       if (actMbar !== null && actMbar > 100) {
-        const boostBar = Math.round(((actMbar - 1013) / 1000) * 100) / 100;
+        const boostBar = Math.round(((actMbar - (this.liveTelemetry.baroPressureKpa ?? 101.3) * 10) / 1000) * 100) / 100;
         this.liveTelemetry.boostBar = boostBar;
         this.liveTelemetry.boostPsi = Math.round(boostBar * 14.5038 * 10) / 10;
       }
