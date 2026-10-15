@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+import { iosObd } from './iosObd';
 import { TelemetryData, DTCFault, DtcScanDebugInfo, EngineStageId, EngineStageConfig, FuelOctane, VagBlockGroup, VagBlockField } from '../types/telemetry';
 import { lookupAndTranslateDtcToGreek } from './vagDtcDictionary';
 
@@ -1467,6 +1469,32 @@ class ObdEngine {
       }
     }
 
+    if (Capacitor.getPlatform() === 'ios') {
+      try {
+        await iosObd.connect({ host: this.wifiConfig.ip, port: this.wifiConfig.port });
+        this.mode = 'wifi';
+        this.debugState.bridgeType = 'iOS Native TCP Socket (WiFi)';
+        this.debugState.deviceName = 'WiFi ELM327';
+        this.debugState.deviceAddress = this.wifiConfig.ip + ':' + this.wifiConfig.port;
+        this.notifyDebug();
+        this.notifyStatus('Συνδέθηκε WiFi OBD-II μέσω iPhone. Κλείδωμα ECU...', 'wifi');
+        const locked = await this.initializeAndLockEcu();
+        if (locked) {
+          this.startRealObdPolling();
+          return true;
+        }
+        this.stopRealObdPolling();
+        this.notifyStatus('WiFi dongle συνδεδεμένο, αλλά η ECU δεν απάντησε. Ελέγξτε την ανάφλεξη.', 'wifi');
+        return false;
+      } catch (error: any) {
+        this.debugState.lastError = error?.message || String(error);
+        this.notifyDebug();
+        this.notifyError('Σφάλμα iOS WiFi OBD: ' + this.debugState.lastError);
+        this.mode = 'disconnected';
+        return false;
+      }
+    }
+
     this.notifyError('Η σύνδεση WiFi OBD απαιτεί σύνδεση TCP Socket από τη συσκευή Android.');
     this.mode = 'disconnected';
     this.notifyTelemetry({ ...ZERO_TELEMETRY, timestamp: Date.now() });
@@ -1478,6 +1506,7 @@ class ObdEngine {
     if (this.isNativeAndroid() && window.AndroidOBD) {
       window.AndroidOBD.disconnect();
     }
+    if (Capacitor.getPlatform() === 'ios') void iosObd.disconnect();
     this.mode = 'disconnected';
     this.debugState.ecuLocked = false;
     this.debugState.bridgeType = 'Αποσυνδεδεμένο';
@@ -2204,6 +2233,14 @@ class ObdEngine {
       this.debugState.totalCommandsSent++;
       this.currentActiveCmd = cleanCmd;
       this.streamProcessor.reset();
+
+      if (Capacitor.getPlatform() === 'ios') {
+        const start = performance.now();
+        const { response } = await iosObd.command({ command: cleanCmd });
+        this.lastBridgeLatencyMs = performance.now() - start;
+        this.streamProcessor.feed(response, cleanCmd);
+        return response;
+      }
 
       // 1. Android Native Bridge (Bluetooth Classic RFCOMM SPP & TCP Socket)
       if (this.isNativeAndroid() && window.AndroidOBD) {
