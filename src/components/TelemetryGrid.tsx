@@ -1,5 +1,5 @@
 import React from 'react';
-import { Wind, Flame, Thermometer, ShieldAlert, Activity, Battery, Compass } from 'lucide-react';
+import { Wind, Flame, Thermometer, Activity, Battery, Compass } from 'lucide-react';
 import { TelemetryData } from '../types/telemetry';
 
 interface Props {
@@ -13,11 +13,8 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
     lambda,
     afr,
     ignitionTiming,
-    knockRetard,
     coolantTemp,
     iat,
-    oilTemp,
-    oilPressure,
     shortTermFuelTrim,
     longTermFuelTrim,
     o2SensorVoltage,
@@ -26,9 +23,6 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
     batteryVoltage,
     throttlePosition,
   } = telemetry;
-
-  const validKnocks = knockRetard.filter((v): v is number => v !== null);
-  const maxKnock = validKnocks.length > 0 ? Math.max(...validKnocks) : null;
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -105,34 +99,6 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
         </div>
       </div>
 
-      {/* 3. Knock Retard (CF) Cylinders 1-4 */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm">
-        <div className="flex items-center justify-between text-slate-400">
-          <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
-            <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
-            Knock Retard (CF)
-          </span>
-          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-bold">
-            {maxKnock !== null ? `Max: ${maxKnock.toFixed(1)}°` : 'N/A'}
-          </span>
-        </div>
-        <div className="my-1.5">
-          <div className="grid grid-cols-4 gap-1 text-center font-mono">
-            {knockRetard.map((cf, idx) => (
-              <div key={idx} className="bg-slate-950/70 rounded p-1 border border-slate-800">
-                <span className="text-[9px] text-slate-400 block font-sans">Cyl {idx + 1}</span>
-                <span className="text-xs font-bold text-slate-300">
-                  {cf !== null ? `${cf.toFixed(1)}°` : 'N/A'}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <p className="text-[10px] text-slate-400">
-          VAG KWP Group 020 (2114)
-        </p>
-      </div>
-
       {/* 4. Ignition Timing (PID 010E) */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm">
         <div className="flex items-center justify-between text-slate-400">
@@ -165,47 +131,19 @@ export const TelemetryGrid: React.FC<Props> = ({ telemetry }) => {
         </div>
       </div>
 
-      {/* 5. Coolant (0105) & Oil Temp (015C) / Oil Pressure */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between hover:border-slate-700 transition shadow-sm">
+      {/* 5. Coolant temperature only */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between shadow-sm">
         <div className="flex items-center justify-between text-slate-400">
           <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
-            <Thermometer className="w-3.5 h-3.5 text-red-400" />
-            Ψυκτικό &amp; Λάδι
+            <Thermometer className="w-3.5 h-3.5 text-red-400" /> Θερμοκρασία Ψυκτικού
           </span>
-          <span className="text-[10px] font-mono text-slate-400">0105 / 015C</span>
+          <span className="text-[10px] font-mono">PID 0105</span>
         </div>
-        <div className="my-2 flex items-center justify-between">
-          <div>
-            <div className="flex items-baseline gap-1">
-              <span
-                className={`text-xl font-black font-mono ${
-                  coolantTemp !== null && coolantTemp > 100 ? 'text-red-400' : 'text-emerald-400'
-                }`}
-              >
-                {coolantTemp !== null ? `${coolantTemp} °C` : 'N/A'}
-              </span>
-            </div>
-            <span className="text-[10px] text-slate-400">Ψυκτικό (0105)</span>
-          </div>
-          <div className="h-8 w-px bg-slate-800" />
-          <div>
-            <div className="flex items-baseline gap-1">
-              <span className="text-xl font-black font-mono text-amber-400">
-                {oilTemp !== null ? `${oilTemp} °C` : 'N/A'}
-              </span>
-            </div>
-            <span className="text-[10px] text-slate-400">
-              Λάδι (015C) • Πίεση: {oilPressure !== null ? `${oilPressure.toFixed(1)} bar` : 'N/A'}
-            </span>
-          </div>
+        <div className="my-2 text-2xl font-black font-mono text-white">
+          {coolantTemp !== null ? `${coolantTemp} °C` : 'N/A'}
         </div>
         <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all ${
-              coolantTemp !== null && coolantTemp > 98 ? 'bg-red-500' : 'bg-emerald-500'
-            }`}
-            style={{ width: `${coolantTemp !== null ? Math.min(100, Math.max(0, (coolantTemp / 115) * 100)) : 0}%` }}
-          />
+          <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${coolantTemp !== null ? Math.min(100, Math.max(0, coolantTemp / 115 * 100)) : 0}%` }} />
         </div>
       </div>
 
