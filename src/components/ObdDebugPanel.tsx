@@ -149,7 +149,9 @@ ${recentLogs}
     });
   };
 
-  const pidEntries = Object.values(debug.pidTable) as PidDebugEntry[];
+  const pidEntries = (Object.values(debug.pidTable) as PidDebugEntry[])
+    .filter(row => row.status !== 'no_data' && row.parsedValue !== 'N/A' && !row.parsedValue.startsWith('N/A ('));
+
 
   return (
     <div className="space-y-5">
@@ -348,7 +350,7 @@ ${recentLogs}
             Ζωντανός Πίνακας Αισθητήρων OBD-II (Πραγματικοί Χρόνοι Απόκρισης &amp; Refresh Interval)
           </h3>
           <span className="text-[11px] font-mono text-slate-400">
-            Μη υποστηριζόμενα PIDs εμφανίζουν αυστηρά N/A και αφαιρούνται από τον κύκλο
+            Τα μη υποστηριζόμενα PIDs (N/A) αποκρύπτονται από τον πίνακα, αλλά παραμένουν στην αναφορά Debug
           </span>
         </div>
 
